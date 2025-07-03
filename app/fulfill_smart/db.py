@@ -1,7 +1,7 @@
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
-from models.models import Base
-from utils.db import get_session
+from models import Base
+
 
 DATABASE_URL = "postgresql+psycopg2://postgres:220502@localhost:5432/postgres"
 

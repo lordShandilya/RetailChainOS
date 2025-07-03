@@ -1,5 +1,5 @@
-from utils.db import get_session
-from app.fulfill_smart.models.models import FulfillmentCenter, InventoryItem
+from db import get_session
+from models import FulfillmentCenter, InventoryItem
 import math
 
 
@@ -57,7 +57,8 @@ def find_fulfillment_center(lat, lon, sku, quantity, fc_map):
             if score < min_score:
                 min_score = score
                 closest_fc = fc_id
-
+    
+    
     return closest_fc, min_score if closest_fc else None
 
 

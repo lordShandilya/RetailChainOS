@@ -4,3 +4,5 @@ route.log
 forecast.log
 **/env/
 guide.md
+*.pyc
+__pycache__/
