@@ -1,13 +1,13 @@
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy import Column, Integer, String, Float, ForeignKey
-from sqlalchemy import relationship
+from sqlalchemy.orm import relationship
 
 Base = declarative_base()
 
 class FulfillmentCenter(Base):
     __tablename__ = 'FulfillmentCenter'
 
-    id = Column(String, primary_key = True)
+    id = Column(Integer, primary_key = True, autoincrement=True)
     latitude = Column(Float)
     longitude = Column(Float)
     current_workload = Column(Integer)
@@ -21,10 +21,10 @@ class FulfillmentCenter(Base):
 class InventoryItem(Base):
     __tablename__ = 'InventoryItem'
 
-    id = Column(String, primary_key = True)
+    id = Column(Integer, primary_key = True, autoincrement=True)
     sku = Column(String)
     quantity = Column(Integer)
-    fulfillment_center_id = Column(String, ForeignKey('FulfillmentCenter.id'))
+    fulfillment_center_id = Column(Integer, ForeignKey('FulfillmentCenter.id'))
 
     fulfillment_center = relationship("FulfillmentCenter", back_populates="inventory_items")
 
