@@ -1,4 +1,7 @@
-.venv/
+**/.venv/
 Me.md
 route.log
 forecast.log
+**/node_modules/
+Readme.md
+**/.env
