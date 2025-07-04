@@ -37,7 +37,7 @@ def create_distance_matrix():
         """
         df = pd.read_sql(query, engine)
         destinations = sorted(list(set(df['destination'].unique()) - {'Atlanta'}))
-        locations = ['Atlanta'] + destinations
+        locations = ['Atlanta'] + destinationsEnhancements with Real-World Explanations
         n = len(locations)
         distance_matrix = np.zeros((n, n))
         for _, row in df.iterrows():
@@ -155,7 +155,8 @@ def optimize_routes():
                         else:
                             prev_node = manager.IndexToNode(previous_index)
                             prev_distance = float(data['distance_matrix'][prev_node][node])
-                        routes.append((vehicle_id, sku_id, store, sequence, prev_distance, 1))
+                        estimated_time = int(max(1, (prev_distance / 60) + 0.25))  # 60 km/h + 15 min stop
+                        routes.append((vehicle_id, sku_id, store, sequence, prev_distance, estimated_time))
                     previous_index = index
                     index = solution.Value(routing.NextVar(index))
                     sequence += 1
