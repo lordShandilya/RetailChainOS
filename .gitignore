@@ -2,6 +2,17 @@
 Me.md
 route.log
 forecast.log
+<<<<<<< HEAD
 **/node_modules/
 Readme.md
 **/.env
+=======
+**/env/
+guide.md
+*.pyc
+__pycache__/
+**/node_modules/
+Readme.md
+**/.env
+**/**.osm.pbf
+>>>>>>> t
