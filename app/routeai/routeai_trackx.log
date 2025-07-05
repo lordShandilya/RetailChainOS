@@ -1,0 +1,4 @@
+[dotenv@17.0.0] injecting env (9) from .env – 🔐 encrypt with dotenvx: https://dotenvx.com
+Server running on http://localhost:3001
+Track store error: permission denied for table stores
+Socket.IO client connected

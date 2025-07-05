@@ -1,8 +1,15 @@
-.venv/
+**/.venv/
 Me.md
 route.log
 forecast.log
+**/node_modules/
+Readme.md
+**/.env
 **/env/
 guide.md
 *.pyc
 __pycache__/
+**/node_modules/
+Readme.md
+**/.env
+**/**.osm.pbf   

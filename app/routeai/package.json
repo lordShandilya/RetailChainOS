@@ -1,0 +1,27 @@
+{
+  "name": "routeai",
+  "version": "1.0.0",
+  "main": "server.js",
+  "dependencies": {
+    "axios": "^1.10.0",
+    "dotenv": "^17.0.0",
+    "express": "^5.1.0",
+    "ioredis": "^5.6.1",
+    "lodash": "^4.17.21",
+    "mapbox-gl": "^3.13.0",
+    "nodemon": "^3.1.10",
+    "pg": "^8.16.3",
+    "socket.io": "^4.8.1",
+    "socket.io-client": "^4.8.1"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js > routeai_trackx.log 2>&1",
+    "dev": "nodemon server.js > routeai_trackx.log 2>&1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": ""
+}

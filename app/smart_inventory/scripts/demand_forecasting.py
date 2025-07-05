@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+
 """
 demand_forecasting.py
 Purpose: Generates demand forecasts for SKUs using Prophet and creates reorder alerts for low stock levels in the
@@ -14,6 +14,7 @@ from prophet import Prophet
 from sklearn.metrics import mean_absolute_error
 import logging
 import warnings
+from datetime import datetime, timedelta
 
 warnings.filterwarnings("ignore", category=UserWarning)
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -120,14 +121,13 @@ def forecast_sku(sku_id, conn, cur):
     except Exception as e:
         logging.error(f"Error forecasting SKU {sku_id}: {e}")
 
-
 def generate_reorder_alerts(conn, cur):
     try:
         last_sale_date = pd.read_sql("SELECT MAX(sale_date) AS max_date FROM sales;", engine)['max_date'].iloc[0]
         start_date = (pd.to_datetime(last_sale_date) + pd.Timedelta(days=30)).strftime('%Y-%m-%d')
         end_date = (pd.to_datetime(last_sale_date) + pd.Timedelta(days=37)).strftime('%Y-%m-%d')
         query = f"""
-            SELECT f.sku_id, f.forecast_date, f.predicted_quantity, i.store_location, i.stock_level
+            SELECT f.sku_id, f.forecast_date, f.predicted_quantity, i.store_location, i.store_address, i.stock_level
             FROM forecasts f
             JOIN inventory i ON f.sku_id = i.sku_id
             WHERE f.forecast_date >= '{start_date}'
@@ -140,26 +140,28 @@ def generate_reorder_alerts(conn, cur):
             return
         safety_stock = 100
         df['reorder_threshold'] = df.groupby('sku_id')['predicted_quantity'].transform(lambda x: x.rolling(3, min_periods=1).sum()) + safety_stock
-        logging.debug(f"Sample thresholds: {df[['sku_id', 'store_location', 'stock_level', 'reorder_threshold']].head().to_dict()}")
-        alerts = df[df['stock_level'] < df['reorder_threshold']][['sku_id', 'store_location', 'reorder_threshold', 'stock_level', 'forecast_date']]
+        df['priority_score'] = (df['reorder_threshold'] - df['stock_level']) / df['stock_level'].clip(lower=1)
+        alerts = df[df['stock_level'] < df['reorder_threshold']][[
+            'sku_id', 'store_location', 'store_address', 'reorder_threshold', 'stock_level', 'forecast_date', 'priority_score'
+        ]]
         logging.debug(f"Generated {len(alerts)} reorder alerts")
         logging.debug(f"Alert locations: {alerts['store_location'].unique().tolist()}")
         alert_data = [
-            (int(row['sku_id']), row['store_location'], float(row['reorder_threshold']), int(row['stock_level']), row['forecast_date'])
+            (int(row['sku_id']), row['store_location'], row['store_address'], float(row['reorder_threshold']),
+             int(row['stock_level']), row['forecast_date'], float(row['priority_score']))
             for _, row in alerts.iterrows()
         ]
         cur.execute("TRUNCATE TABLE reorder_alerts RESTART IDENTITY;")
         cur.executemany(
             """
-            INSERT INTO reorder_alerts (sku_id, store_location, reorder_threshold, current_stock, alert_date)
-            VALUES (%s, %s, %s, %s, %s)
+            INSERT INTO reorder_alerts (sku_id, store_location, store_address, reorder_threshold, current_stock, alert_date, priority_score)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
             """,
             alert_data
         )
         logging.info(f"Saved {len(alert_data)} reorder alerts")
     except Exception as e:
         logging.error(f"Error generating reorder alerts: {e}")
-
 
 def evaluate_model(sku_id):
     try:
@@ -207,3 +209,6 @@ def run_forecasting():
 
 if __name__ == "__main__":
     run_forecasting()
+
+
+# python scripts/demand_forecasting.py > forecast.log 2>&1
