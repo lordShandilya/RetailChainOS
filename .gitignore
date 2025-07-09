@@ -12,4 +12,4 @@ __pycache__/
 **/node_modules/
 Readme.md
 **/.env
-**/**.osm.pbf   
+**/**.osm.pbf
