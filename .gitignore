@@ -13,3 +13,4 @@ __pycache__/
 Readme.md
 **/.env
 **/**.osm.pbf
+**/**.log
