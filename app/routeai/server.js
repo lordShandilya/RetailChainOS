@@ -1,3 +1,4 @@
+// app/routeai/server.js
 require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
@@ -16,12 +17,22 @@ const io = socketIo(server, {
     credentials: true,
   },
 });
+
 const pool = new Pool({
   user: process.env.DB_USER || "walmart_user",
   host: process.env.DB_HOST || "localhost",
   database: process.env.DB_NAME || "walmart_db",
-  password: process.env.DB_PASSWORD,
+  password: process.env.DB_PASSWORD || "securepassword",
   port: process.env.DB_PORT || 5432,
+});
+
+pool.connect((err, client, release) => {
+  if (err) {
+    console.error("Database connection error:", err.message);
+    process.exit(1);
+  }
+  console.log("Database connected successfully");
+  release();
 });
 
 app.use(cors({ origin: "http://localhost:3000", credentials: true }));
@@ -79,10 +90,17 @@ app.get("/optimize-routes", async (req, res) => {
     `);
     if (!alerts.length) {
       console.error("No reorder alerts found");
-      return res.status(400).json({
-        error: "No reorder alerts found, ensure seed_data.py ran successfully",
-      });
+      return res
+        .status(400)
+        .json({
+          error:
+            "No reorder alerts found, ensure seed_data.py ran successfully",
+        });
     }
+    console.log(
+      `Found ${alerts.length} reorder alerts:`,
+      alerts.map((a) => a.store_location),
+    );
     const stops = alerts.map((alert) => ({
       store_id: alert.store_id,
       store_location: alert.store_location,
@@ -93,16 +111,14 @@ app.get("/optimize-routes", async (req, res) => {
       priority: alert.priority_score,
     }));
 
-    // Cluster stores within 10 km
     const { clusters, noise } = dbscan(stops, 10, 2);
+    console.log(`Clusters: ${clusters.length}, Noise: ${noise.length}`);
 
-    // Calculate routes for clusters and isolated stops
     const routes = [];
     let totalDistance = 0;
     let totalTime = 0;
     const origin = { lat: 13.1, lng: 77.6 }; // Bengaluru DC
 
-    // Process clusters
     for (const cluster of clusters) {
       const coordinates = [
         [origin.lng, origin.lat],
@@ -131,11 +147,12 @@ app.get("/optimize-routes", async (req, res) => {
           priority: _.mean(cluster.map((s) => s.priority)),
         });
       } catch (error) {
-        console.error(`ORS error for cluster: ${error.message}`);
+        console.error(
+          `ORS error for cluster ${JSON.stringify(coordinates)}: ${error.message}`,
+        );
       }
     }
 
-    // Process isolated stops
     for (const stop of noise) {
       const coordinates = [
         [origin.lng, origin.lat],
@@ -170,14 +187,12 @@ app.get("/optimize-routes", async (req, res) => {
       }
     }
 
-    // Clear previous routes
     await pool.query("DELETE FROM delivery_routes WHERE vehicle_id = $1", [2]);
 
-    // Insert routes into database
     for (const [i, route] of routes.entries()) {
       for (const [j, stop] of route.stops.entries()) {
         await pool.query(
-          "INSERT INTO delivery_routes (vehicle_id, sku_id, store_id, sequence, distance_km, estimated_time, eta_days, priority_score, lat, lng) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+          "INSERT INTO delivery_routes (vehicle_id, sku_id, store_id, sequence, distance_km, estimated_time, eta_days, priority_score) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)",
           [
             2,
             1,
@@ -187,20 +202,16 @@ app.get("/optimize-routes", async (req, res) => {
             route.time_hours,
             Math.ceil(route.time_hours / 24),
             route.priority,
-            stop.lat,
-            stop.lng,
           ],
         );
       }
     }
 
-    // Insert tracking log
     await pool.query(
       "INSERT INTO tracking_logs (vehicle_id, latitude, longitude, timestamp) VALUES ($1, $2, $3, NOW())",
       [2, origin.lat, origin.lng],
     );
 
-    // Calculate metrics
     await pool.query(
       "INSERT INTO logistics_metrics (run_date, total_distance_km, total_fuel_cost, total_co2_kg) VALUES ($1, $2, $3, $4)",
       [new Date(), totalDistance, totalDistance * 0.1, totalDistance * 0.2],
@@ -226,7 +237,7 @@ app.get("/route/:vehicleId", async (req, res) => {
   try {
     const { rows } = await pool.query(
       `
-      SELECT dr.*, s.store_location
+      SELECT dr.*, s.store_location, s.lat, s.lng
       FROM delivery_routes dr
       JOIN stores s ON dr.store_id = s.store_id
       WHERE dr.vehicle_id = $1
@@ -258,45 +269,65 @@ app.get("/route/:vehicleId", async (req, res) => {
 app.get("/track/:storeId", async (req, res) => {
   const { storeId } = req.params;
   try {
+    const { rows: store } = await pool.query(
+      `
+      SELECT store_id, store_location, lat, lng
+      FROM stores
+      WHERE LOWER(store_location) = LOWER($1) OR store_id::text = $1
+    `,
+      [storeId],
+    );
+    if (!store.length) {
+      console.error("No store found for:", storeId);
+      return res.status(404).json({ error: `No store found for: ${storeId}` });
+    }
+    const store_id = store[0].store_id;
+    console.log(
+      `Resolved storeId ${storeId} to store_id ${store_id} (${store[0].store_location})`,
+    );
+
     const { rows: routes } = await pool.query(
       `
       SELECT dr.*, s.store_location, s.lat, s.lng
       FROM delivery_routes dr
       JOIN stores s ON dr.store_id = s.store_id
-      WHERE s.store_location = $1
+      WHERE dr.store_id = $1
       ORDER BY dr.created_at DESC LIMIT 1
     `,
-      [storeId],
+      [store_id],
     );
     if (!routes.length) {
-      console.error("No delivery routes found for store:", storeId);
+      console.error(
+        "No delivery routes found for store_id:",
+        store_id,
+        "store_location:",
+        store[0].store_location,
+      );
       return res
         .status(404)
-        .json({ error: `No delivery routes found for store: ${storeId}` });
+        .json({
+          error: `No delivery routes found for store: ${store[0].store_location}`,
+        });
     }
     const { rows: tracking } = await pool.query(
-      "SELECT latitude, longitude FROM tracking_logs WHERE vehicle_id = $1 ORDER BY timestamp DESC LIMIT 1",
+      `
+      SELECT latitude, longitude
+      FROM tracking_logs
+      WHERE vehicle_id = $1
+      ORDER BY timestamp DESC LIMIT 1
+    `,
       [routes[0].vehicle_id],
     );
-    if (!tracking.length) {
-      console.error(
-        "No tracking logs found for vehicle:",
-        routes[0].vehicle_id,
-      );
-      return res.status(404).json({
-        error: `No tracking logs found for vehicle: ${routes[0].vehicle_id}`,
-      });
-    }
     res.json({
       route: {
         geometry: {
           type: "LineString",
-          coordinates: routes.map((r) => [r.lng, r.lat]),
+          coordinates: [[routes[0].lng, routes[0].lat]],
         },
       },
       vehicle: {
-        lat: tracking[0].latitude,
-        lng: tracking[0].longitude,
+        lat: tracking.length ? tracking[0].latitude : routes[0].lat,
+        lng: tracking.length ? tracking[0].longitude : routes[0].lng,
       },
       eta_days: routes[0].eta_days,
     });

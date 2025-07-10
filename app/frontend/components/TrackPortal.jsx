@@ -1,154 +1,191 @@
+// components/TrackPortal.jsx
 "use client";
 import { useEffect, useRef, useState } from "react";
-import maplibregl from "maplibre-gl";
+import mapboxgl from "mapbox-gl";
 import io from "socket.io-client";
-import "maplibre-gl/dist/maplibre-gl.css";
+import "mapbox-gl/dist/mapbox-gl.css";
 
 const TrackPortal = ({ storeId }) => {
   const mapContainer = useRef(null);
   const map = useRef(null);
-  const [vehicleData, setVehicleData] = useState(null);
+  const [routeData, setRouteData] = useState(null);
+  const [error, setError] = useState(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    map.current = new maplibregl.Map({
+    if (!process.env.NEXT_PUBLIC_MAPBOX_TOKEN) {
+      setError("Mapbox access token is missing");
+      console.error("Error: NEXT_PUBLIC_MAPBOX_TOKEN is not set in .env.local");
+      setLoading(false);
+      return;
+    }
+
+    mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
+    map.current = new mapboxgl.Map({
       container: mapContainer.current,
-      style: {
-        version: 8,
-        sources: {
-          osm_roads: {
-            type: "vector",
-            tiles: [
-              "http://localhost:7800/public.planet_osm_roads/{z}/{x}/{y}.pbf",
-            ],
-            minzoom: 0,
-            maxzoom: 14,
-          },
-          osm_polygons: {
-            type: "vector",
-            tiles: [
-              "http://localhost:7800/public.planet_osm_polygon/{z}/{x}/{y}.pbf",
-            ],
-            minzoom: 0,
-            maxzoom: 14,
-          },
-          osm_points: {
-            type: "vector",
-            tiles: [
-              "http://localhost:7800/public.planet_osm_point/{z}/{x}/{y}.pbf",
-            ],
-            minzoom: 0,
-            maxzoom: 14,
-          },
-        },
-        layers: [
-          {
-            id: "background",
-            type: "background",
-            paint: {
-              "background-color": "#f0f0f0",
-            },
-          },
-          {
-            id: "polygons",
-            type: "fill",
-            source: "osm_polygons",
-            "source-layer": "planet_osm_polygon",
-            filter: ["all"],
-            paint: {
-              "fill-color": "#d1d5db",
-              "fill-opacity": 0.4,
-            },
-          },
-          {
-            id: "roads",
-            type: "line",
-            source: "osm_roads",
-            "source-layer": "planet_osm_roads",
-            filter: ["all"],
-            paint: {
-              "line-color": "#3388ff",
-              "line-width": ["interpolate", ["linear"], ["zoom"], 10, 1, 14, 3],
-            },
-          },
-          {
-            id: "points",
-            type: "circle",
-            source: "osm_points",
-            "source-layer": "planet_osm_point",
-            filter: ["all"],
-            paint: {
-              "circle-radius": 4,
-              "circle-color": "#ff5555",
-            },
-          },
-        ],
-      },
-      center: [77.5946, 12.9716], // Bengaluru
+      style: "mapbox://styles/mapbox/streets-v12",
+      center: [80.2707, 13.0827], // Chennai
       zoom: 12,
     });
 
-    // Debug map and tile loading
     map.current.on("load", () => {
       console.log("Map loaded");
-      // Log available source data
-      const sources = map.current.getStyle().sources;
-      Object.keys(sources).forEach((sourceId) => {
-        const source = map.current.getSource(sourceId);
-        if (source && source.vectorLayerIds) {
-          console.log(`Source ${sourceId} layers:`, source.vectorLayerIds);
-        }
-      });
+      // Load custom truck icon
+      map.current.loadImage(
+        "https://img.icons8.com/color/48/000000/delivery-truck.png",
+        (error, image) => {
+          if (error) {
+            console.error("Error loading truck icon:", error);
+            return;
+          }
+          map.current.addImage("truck", image);
+        },
+      );
+      // Add navigation controls
+      map.current.addControl(new mapboxgl.NavigationControl());
+      map.current.resize();
     });
     map.current.on("error", (e) => {
       console.error("Map error:", JSON.stringify(e));
-    });
-    map.current.on("sourcedataerror", (e) => {
-      console.error("Source error:", JSON.stringify(e));
-    });
-    map.current.on("sourcedataloading", (e) => {
-      console.log("Loading source:", e.sourceId);
-    });
-    map.current.on("sourcedata", (e) => {
-      console.log("Source loaded:", e.sourceId, e.isSourceLoaded);
+      setError("Map failed to load: " + e.message);
+      setLoading(false);
     });
 
-    const fetchDeliveryData = async () => {
+    const fetchRouteData = async (retryCount = 3, delay = 1000) => {
       try {
+        setLoading(true);
         const response = await fetch(
-          `${process.env.NEXT_PUBLIC_BACKEND_URL}/track/${storeId}`,
+          `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"}/track/${storeId}`,
         );
         const data = await response.json();
-        console.log("Fetched data:", data);
-        setVehicleData(data);
+        console.log("Fetched data:", JSON.stringify(data, null, 2));
+        if (data.error) {
+          setError(data.error);
+          setLoading(false);
+          return;
+        }
+        if (!data.vehicle || !data.vehicle.lat || !data.vehicle.lng) {
+          setError("Invalid vehicle data received");
+          setLoading(false);
+          return;
+        }
+        setRouteData(data);
+        setError(null);
+        setLoading(false);
 
-        map.current.on("load", () => {
-          map.current.addSource("route", {
-            type: "geojson",
-            data: {
-              type: "Feature",
-              properties: {},
-              geometry: data.route.geometry,
-            },
-          });
-          map.current.addLayer({
-            id: "route",
-            type: "line",
-            source: "route",
-            layout: { "line-join": "round", "line-cap": "round" },
-            paint: { "line-color": "#3b82f6", "line-width": 4 },
-          });
-
-          const marker = new maplibregl.Marker()
-            .setLngLat([data.vehicle.lng, data.vehicle.lat])
-            .addTo(map.current);
-          map.current.setCenter([data.vehicle.lng, data.vehicle.lat]);
-        });
+        if (map.current.isStyleLoaded()) {
+          addMapLayers(data);
+        } else {
+          map.current.on("load", () => addMapLayers(data));
+        }
       } catch (error) {
-        console.error("Error fetching delivery data:", error);
+        console.error("Error fetching track:", error.message);
+        if (retryCount > 0) {
+          console.log(`Retrying fetch (${retryCount} attempts left)...`);
+          setTimeout(() => fetchRouteData(retryCount - 1, delay * 2), delay);
+        } else {
+          setError("Failed to fetch track data: " + error.message);
+          setLoading(false);
+        }
       }
     };
 
-    fetchDeliveryData();
+    const addMapLayers = (data) => {
+      if (!map.current.getSource("route")) {
+        map.current.addSource("route", {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            properties: {},
+            geometry: data.route.geometry,
+          },
+        });
+        map.current.addLayer({
+          id: "route",
+          type: "line",
+          source: "route",
+          layout: { "line-join": "round", "line-cap": "round" },
+          paint: {
+            "line-color": "#3b82f6",
+            "line-width": 5,
+            "line-opacity": 0.8,
+          },
+        });
+      } else {
+        map.current.getSource("route").setData({
+          type: "Feature",
+          properties: {},
+          geometry: data.route.geometry,
+        });
+      }
+
+      if (!map.current.getSource("vehicle")) {
+        map.current.addSource("vehicle", {
+          type: "geojson",
+          data: {
+            type: "Feature",
+            geometry: {
+              type: "Point",
+              coordinates: [data.vehicle.lng, data.vehicle.lat],
+            },
+          },
+        });
+        map.current.addLayer({
+          id: "vehicle",
+          type: "symbol",
+          source: "vehicle",
+          layout: {
+            "icon-image": "truck",
+            "icon-size": 0.5,
+            "icon-allow-overlap": true,
+          },
+        });
+        // Add popup
+        new mapboxgl.Popup({ closeOnClick: false })
+          .setLngLat([data.vehicle.lng, data.vehicle.lat])
+          .setHTML(
+            `<h3>Store ${storeId}</h3><p>ETA: ${data.eta_days} day(s)</p>`,
+          )
+          .addTo(map.current);
+      } else {
+        map.current.getSource("vehicle").setData({
+          type: "Feature",
+          geometry: {
+            type: "Point",
+            coordinates: [data.vehicle.lng, data.vehicle.lat],
+          },
+        });
+      }
+      map.current.setCenter([data.vehicle.lng, data.vehicle.lat]);
+      map.current.resize();
+
+      // Animate vehicle along route (if coordinates > 1)
+      if (data.route.geometry.coordinates.length > 1) {
+        animateVehicle(data.route.geometry.coordinates);
+      }
+    };
+
+    const animateVehicle = (coordinates) => {
+      let step = 0;
+      const steps = coordinates.length;
+      const animate = () => {
+        if (step < steps) {
+          const [lng, lat] = coordinates[step];
+          if (map.current.getSource("vehicle")) {
+            map.current.getSource("vehicle").setData({
+              type: "Feature",
+              geometry: { type: "Point", coordinates: [lng, lat] },
+            });
+            map.current.setCenter([lng, lat]);
+          }
+          step++;
+          setTimeout(animate, 1000); // Move every 1s
+        }
+      };
+      animate();
+    };
+
+    fetchRouteData();
 
     const socket = io(
       process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001",
@@ -161,11 +198,12 @@ const TrackPortal = ({ storeId }) => {
     });
     socket.on("connect_error", (err) => {
       console.error("Socket.IO error:", err.message);
+      setError("Socket.IO connection failed: " + err.message);
     });
     socket.on("location-update", (data) => {
       console.log("Location update:", data);
-      if (data.storeId === storeId) {
-        setVehicleData((prev) => ({
+      if (data.storeId === storeId || data.storeId === String(storeId)) {
+        setRouteData((prev) => ({
           ...prev,
           vehicle: { lat: data.lat, lng: data.lng },
         }));
@@ -174,41 +212,41 @@ const TrackPortal = ({ storeId }) => {
             type: "Feature",
             geometry: { type: "Point", coordinates: [data.lng, data.lat] },
           });
-        } else {
-          map.current.addSource("vehicle", {
-            type: "geojson",
-            data: {
-              type: "Feature",
-              geometry: { type: "Point", coordinates: [data.lng, data.lat] },
-            },
-          });
-          map.current.addLayer({
-            id: "vehicle",
-            type: "circle",
-            source: "vehicle",
-            paint: { "circle-radius": 8, "circle-color": "#ff0000" },
-          });
+          map.current.setCenter([data.lng, data.lat]);
+          map.current.resize();
+          // Update popup
+          map.current.getLayer("vehicle") &&
+            new mapboxgl.Popup({ closeOnClick: false })
+              .setLngLat([data.lng, data.lat])
+              .setHTML(
+                `<h3>Store ${storeId}</h3><p>ETA: ${routeData?.eta_days || "N/A"} day(s)</p>`,
+              )
+              .addTo(map.current);
         }
       }
     });
 
     return () => {
       socket.disconnect();
-      if (map.current) map.current.remove();
+      if (map.current) {
+        map.current.remove();
+        map.current = null;
+      }
     };
   }, [storeId]);
 
   return (
     <div>
       <h1>Track Delivery for Store {storeId}</h1>
+      {loading && <p>Loading map...</p>}
+      {error && <p style={{ color: "red" }}>Error: {error}</p>}
       <div style={{ height: "600px", width: "100%" }} ref={mapContainer} />
-      {vehicleData && (
+      {routeData && routeData.vehicle && !loading && (
         <div>
           <p>
-            Vehicle Location: {vehicleData.vehicle.lat},{" "}
-            {vehicleData.vehicle.lng}
+            Vehicle Location: {routeData.vehicle.lat}, {routeData.vehicle.lng}
           </p>
-          <p>ETA: {vehicleData.eta_days} day(s)</p>
+          <p>ETA: {routeData.eta_days} day(s)</p>
         </div>
       )}
     </div>
