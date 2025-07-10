@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+
 """
 db_setup.py
 Purpose: Sets up PostgreSQL database and tables for RetailChain OS, simulating Walmart India's retail operations in southern India.

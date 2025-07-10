@@ -1,4 +1,3 @@
-// components/DeliveryMap.jsx
 "use client";
 import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
