@@ -58,7 +58,22 @@ def find_fulfillment_center(lat, lon, sku, quantity, fc_map):
                 min_score = score
                 closest_fc = fc_id
     
-    
-    return closest_fc, min_score if closest_fc else None
+    if closest_fc:
+        session = get_session()
+        try:
+            fulfillment_center = session.query(FulfillmentCenter).filter_by(id=closest_fc, sku=sku).first()
+            inventory_item = session.query(InventoryItem).filter_by(fulfillment_center_id=closest_fc, sku=sku).first()
+            if fulfillment_center:
+                fulfillment_center.current_workload += quantity
+                if inventory_item:
+                    inventory_item.quantity -= quantity
+                    if inventory_item.quantity < 0:
+                        raise ValueError("Insufficient inventory for the requested SKU.")                
+                session.commit()
+        except Exception as e:
+            session.rollback()
+            print(f"Error updating fulfillment center: {e}")
+            return None, None
+    return closest_fc, min_score if closest_fc else None, None
 
 
