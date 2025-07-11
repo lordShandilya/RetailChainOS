@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+
 """
 route_optimization.py
 Purpose: Optimizes last-mile delivery routes for Walmart's SmartRetailSync project using OR-Tools, prioritizing urgent

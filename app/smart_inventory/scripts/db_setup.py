@@ -1,18 +1,20 @@
-
 """
 db_setup.py
-Purpose: Sets up PostgreSQL database and tables for RetailChain OS, simulating Walmart India's retail operations in southern India.
+Purpose: Sets up PostgreSQL databases and tables for RetailChain OS, supporting walmart_db (SmartInventory, RouteAI, TrackX) and postgres (Fulfillment).
 
 Execution: Run before seed_data.py.
 Command: python app/smart_inventory/db_setup.py
 """
 import psycopg2
 from psycopg2 import Error
+from dotenv import dotenv_values
+
+ENV_VALUES = dotenv_values(".env")
 
 DB_PARAMS = {
     "dbname": "walmart_db",
     "user": "walmart_user",
-    "password": "securepassword",
+    "password": ENV_VALUES["DB_USER_PASSWORD"],
     "host": "localhost",
     "port": "5432"
 }
@@ -20,28 +22,30 @@ DB_PARAMS = {
 POSTGRES_PARAMS = {
     "dbname": "postgres",
     "user": "postgres",
-    "password": "postgres",  # Replace with your postgres user password
+    "password": ENV_VALUES["POSTGRES_PASSWORD"],
     "host": "localhost",
     "port": "5432"
 }
 
 def setup_database():
-    """Creates database and tables."""
+    """Creates databases and tables."""
     try:
-        # Connect to default database as postgres to create walmart_db
+        # Connect to postgres as postgres user
         conn = psycopg2.connect(**POSTGRES_PARAMS)
         conn.autocommit = True
         cur = conn.cursor()
 
-        # Ensure walmart_user exists and has CREATEDB privilege
+        # Ensure walmart_user exists
         cur.execute("SELECT 1 FROM pg_roles WHERE rolname = 'walmart_user';")
         if cur.fetchone() is None:
-            cur.execute("CREATE USER walmart_user WITH PASSWORD 'securepassword';")
+            cur.execute(f"CREATE USER walmart_user WITH PASSWORD '{ENV_VALUES['DB_USER_PASSWORD']}';")
         cur.execute("ALTER USER walmart_user WITH CREATEDB;")
 
-        # Drop and create walmart_db (uncomment if needed)
+        # Create walmart_db
         cur.execute("DROP DATABASE IF EXISTS walmart_db;")
         cur.execute("CREATE DATABASE walmart_db OWNER walmart_user;")
+
+        cur.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO walmart_user;")
         cur.close()
         conn.close()
 
@@ -55,17 +59,32 @@ def setup_database():
         )
         conn.autocommit = True
         cur = conn.cursor()
-
-        # Enable PostGIS in walmart_db (for future map support)
         cur.execute("CREATE EXTENSION IF NOT EXISTS postgis;")
         cur.close()
         conn.close()
 
-        # Connect to walmart_db as walmart_user for table creation
+        # Connect to walmart_db as walmart_user
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor()
 
-        # Create stores table first
+        # Create tables
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS FulfillmentCenter (
+                id SERIAL PRIMARY KEY,
+                latitude DOUBLE PRECISION NOT NULL,
+                longitude DOUBLE PRECISION NOT NULL,
+                current_workload INTEGER NOT NULL,
+                handling_capacity INTEGER NOT NULL
+            );
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS InventoryItem (
+                id SERIAL PRIMARY KEY,
+                sku VARCHAR(50) NOT NULL,
+                quantity INTEGER NOT NULL,
+                fulfillment_center_id INTEGER REFERENCES FulfillmentCenter(id) ON DELETE CASCADE
+            );
+        """)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS stores (
                 store_id SERIAL PRIMARY KEY,
@@ -76,98 +95,47 @@ def setup_database():
                 UNIQUE (store_location, store_address)
             );
         """)
-
-        # Create products table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS products (
                 sku_id SERIAL PRIMARY KEY,
                 name TEXT NOT NULL,
-                category TEXT NOT NULL,
-                price NUMERIC NOT NULL,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
+                category TEXT NOT NULL
             );
         """)
-
-        # Create sales table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS sales (
-                sale_id SERIAL PRIMARY KEY,
-                sku_id INTEGER REFERENCES products(sku_id) ON DELETE SET NULL,
-                sale_date DATE NOT NULL,
-                quantity INTEGER NOT NULL,
-                revenue NUMERIC NOT NULL,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
-            );
-        """)
-
-        # Create inventory table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS inventory (
                 inventory_id SERIAL PRIMARY KEY,
+                dc_id INTEGER,
+                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL,
                 sku_id INTEGER REFERENCES products(sku_id) ON DELETE SET NULL,
-                stock_level INTEGER NOT NULL,
-                reorder_threshold INTEGER NOT NULL,
-                last_updated DATE NOT NULL,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
+                current_stock INTEGER NOT NULL
             );
         """)
-
-        # Create logistics table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS logistics (
-                logistics_id SERIAL PRIMARY KEY,
-                origin VARCHAR(255) NOT NULL,
-                destination VARCHAR(255) NOT NULL,
-                distance_km NUMERIC NOT NULL,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
-            );
-        """)
-
-        # Create external_factors table
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS external_factors (
-                factor_id SERIAL PRIMARY KEY,
-                factor_date DATE NOT NULL,
-                weather TEXT,
-                holiday BOOLEAN,
-                disruption TEXT,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
-            );
-        """)
-
-        # Create forecasts table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS forecasts (
                 forecast_id SERIAL PRIMARY KEY,
+                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL,
                 sku_id INTEGER REFERENCES products(sku_id) ON DELETE SET NULL,
-                forecast_date DATE NOT NULL,
-                predicted_quantity NUMERIC NOT NULL,
-                lower_bound NUMERIC NOT NULL,
-                upper_bound NUMERIC NOT NULL,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
+                predicted_demand NUMERIC NOT NULL
             );
         """)
-
-        # Create reorder_alerts table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS reorder_alerts (
                 alert_id SERIAL PRIMARY KEY,
+                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL,
                 sku_id INTEGER REFERENCES products(sku_id) ON DELETE SET NULL,
                 current_stock INTEGER NOT NULL,
                 reorder_threshold INTEGER NOT NULL,
-                alert_date DATE NOT NULL DEFAULT CURRENT_DATE,
-                priority_score FLOAT,
-                store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL
+                priority_score FLOAT
             );
         """)
-
-        # Create delivery_routes table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS delivery_routes (
                 route_id SERIAL PRIMARY KEY,
                 vehicle_id INTEGER NOT NULL,
-                sku_id INTEGER REFERENCES products(sku_id) ON DELETE SET NULL,
+                dc_id INTEGER,
                 store_id INTEGER REFERENCES stores(store_id) ON DELETE SET NULL,
+                sku_id INTEGER REFERENCES products(sku_id) ON DELETE SET NULL,
                 sequence INTEGER NOT NULL,
                 distance_km NUMERIC NOT NULL,
                 estimated_time NUMERIC NOT NULL,
@@ -176,8 +144,6 @@ def setup_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-
-        # Create tracking_logs table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS tracking_logs (
                 id SERIAL PRIMARY KEY,
@@ -187,8 +153,6 @@ def setup_database():
                 timestamp TIMESTAMP NOT NULL
             );
         """)
-
-        # Create logistics_metrics table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS logistics_metrics (
                 metric_id SERIAL PRIMARY KEY,
@@ -199,14 +163,17 @@ def setup_database():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """)
-
-        # Grant permissions to walmart_user
         cur.execute("""
-            GRANT ALL ON stores, products, sales, inventory, logistics, external_factors, forecasts,
-                         reorder_alerts, delivery_routes, tracking_logs, logistics_metrics TO walmart_user;
+            CREATE TABLE IF NOT EXISTS sales (
+                id SERIAL PRIMARY KEY,
+                sku_id INTEGER NOT NULL REFERENCES products(sku_id) ON DELETE CASCADE,
+                store_id INTEGER NOT NULL REFERENCES stores(store_id) ON DELETE CASCADE,
+                sale_date DATE NOT NULL,
+                quantity INTEGER NOT NULL
+            );
         """)
+        cur.execute("GRANT ALL ON ALL TABLES IN SCHEMA public TO walmart_user;")
         cur.execute("GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO walmart_user;")
-
         conn.commit()
         print("Database and tables created successfully")
     except Error as e:
