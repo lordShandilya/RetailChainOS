@@ -18,7 +18,7 @@
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js > routeai_trackx.log 2>&1",
-    "dev": "nodemon server.js > routeai_trackx.log 2>&1"
+    "dev": "yarn nodemon server.js > routeai_trackx.log 2>&1"
   },
   "keywords": [],
   "author": "",
