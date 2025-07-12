@@ -10,6 +10,7 @@ import psycopg2
 from psycopg2 import Error
 from datetime import datetime
 from dotenv import dotenv_values
+import bcrypt
 
 ENV_VALUES = dotenv_values(".env")
 
@@ -56,6 +57,24 @@ def seed_data():
             "INSERT INTO stores (store_id, store_location, store_address, lat, lng) VALUES (%s, %s, %s, %s, %s)",
             stores
         )
+
+        cur.execute("""
+            INSERT INTO vehicles (vehicle_id, capacity) VALUES
+                        (1, 1000), (2, 1500)
+                    ON CONFLICT (vehicle_id) DO NOTHING;
+        """)
+
+        # Seed users
+        hashed_password = bcrypt.hashpw("password123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cur.execute("""
+                INSERT INTO users (username, password, role, store_id, vehicle_id)
+                VALUES
+                ('chennai_owner', %s, 'store_owner', 2, NULL),
+                ('driver2', %s, 'delivery_partner', NULL, 2),
+                ('admin', %s, 'admin', NULL, NULL)
+            ON CONFLICT (username) DO NOTHING;
+        """, (hashed_password, hashed_password, hashed_password))
+
 
         # Seed products
         products = [
