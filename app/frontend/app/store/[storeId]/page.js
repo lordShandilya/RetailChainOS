@@ -1,5 +1,6 @@
 import StoreDashboard from "@/components/StoreDashboard";
 
-export default function StorePage() {
-  return <StoreDashboard />;
+export default async function StorePage({ params }) {
+  const { storeId } = await params;
+  return <StoreDashboard storeId={storeId} />;
 }
