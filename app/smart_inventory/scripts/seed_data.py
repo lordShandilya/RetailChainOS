@@ -1,201 +1,205 @@
-#!/usr/bin/env python
+
 """
 seed_data.py
-Purpose: Populates PostgreSQL tables for RetailChain OS, simulating Walmart India's retail operations in southern India.
+Purpose: Populates PostgreSQL tables for RetailChain OS, supporting walmart_db (SmartInventory, RouteAI, TrackX) and postgres (Fulfillment).
 
 Execution: Run after db_setup.py.
 Command: python app/smart_inventory/seed_data.py
-Prerequisites: Install Faker (pip install Faker) and pandas (pip install pandas).
 """
 import psycopg2
 from psycopg2 import Error
-from faker import Faker
-import random
-from datetime import datetime, timedelta
-import pandas as pd
+from datetime import datetime
+from dotenv import dotenv_values
 
-# Initialize Faker
-fake = Faker()
+ENV_VALUES = dotenv_values(".env")
 
-# Database connection parameters
 DB_PARAMS = {
     "dbname": "walmart_db",
     "user": "walmart_user",
-    "password": "securepassword",
+    "password": ENV_VALUES.get("DB_USER_PASSWORD", "securepassword"),
     "host": "localhost",
     "port": "5432"
 }
 
-# Data parameters
-categories = ['Electronics', 'Apparel', 'Grocery', 'Home', 'Toys']
-locations = [
-    (1, 'Bengaluru', 'No. 123, Brigade Road, Bengaluru, Karnataka 560025', 12.9716, 77.5946),
-    (2, 'Chennai', 'No. 180, Anna Salai, Chennai, Tamil Nadu 600002', 13.0827, 80.2707),
-    (3, 'Hyderabad', 'Survey No. 64, Gachibowli, Hyderabad, Telangana 500032', 17.3850, 78.4867),
-    (4, 'Kochi', 'No. 45, MG Road, Kochi, Kerala 682035', 9.9312, 76.2673),
-    (5, 'Coimbatore', 'No. 321, Avinashi Road, Coimbatore, Tamil Nadu 641018', 11.0168, 76.9558)
-]
-weather_options = ['Sunny', 'Cloudy', 'Rainy', 'Monsoon']
-disruptions = ['None', 'Traffic', 'Strike']
-start_date = datetime(2024, 6, 1)
-end_date = datetime(2025, 7, 5)
+POSTGRES_PARAMS = {
+    "dbname": "postgres",
+    "user": "postgres",
+    "password": ENV_VALUES.get("POSTGRES_PASSWORD", "220502"),
+    "host": "localhost",
+    "port": "5432"
+}
 
 def seed_data():
-    """Populates all tables with mock data."""
+    """Populates tables with demo data."""
     try:
+        # Connect to walmart_db
         conn = psycopg2.connect(**DB_PARAMS)
         cur = conn.cursor()
 
-        # Clear existing data
+        # Clear tables
         cur.execute("""
-            TRUNCATE TABLE sales, inventory, logistics, external_factors, forecasts,
-                         products, reorder_alerts, delivery_routes, tracking_logs, stores
+            TRUNCATE TABLE stores, products, inventory, forecasts, reorder_alerts,
+                         delivery_routes, tracking_logs, logistics_metrics, sales
                          RESTART IDENTITY CASCADE;
         """)
         conn.commit()
 
         # Seed stores
+        stores = [
+            (1, 'Bengaluru', '123 MG Road', 12.9716, 77.5946),
+            (2, 'Chennai', '456 Anna Salai', 13.0827, 80.2707),
+            (3, 'Hyderabad', '789 Banjara Hills', 17.3850, 78.4867),
+            (4, 'Kochi', '101 Marine Drive', 9.9312, 76.2673),
+            (5, 'Coimbatore', '202 Avinashi Road', 11.0168, 76.9558)
+        ]
         cur.executemany(
-            "INSERT INTO stores (store_id, store_location, store_address, lat, lng) VALUES (%s, %s, %s, %s, %s) ON CONFLICT DO NOTHING",
-            locations
+            "INSERT INTO stores (store_id, store_location, store_address, lat, lng) VALUES (%s, %s, %s, %s, %s)",
+            stores
         )
-        conn.commit()
 
         # Seed products
-        products = []
-        for i in range(100):
-            sku_id = i + 1
-            name = fake.word().capitalize() + " " + fake.word().capitalize()
-            category = random.choice(categories)
-            price = round(random.uniform(10, 200), 2)
-            store_id = random.choice(locations)[0]
-            products.append((sku_id, name, category, price, store_id))
+        products = [
+            (1, 'Rice 5kg', 'Grocery'),
+            (2, 'Oil 1L', 'Grocery'),
+            (3, 'Dal 1kg', 'Grocery'),
+            (4, 'Soap', 'Personal Care'),
+            (5, 'Shampoo 200ml', 'Personal Care')
+        ]
         cur.executemany(
-            "INSERT INTO products (sku_id, name, category, price, store_id) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO products (sku_id, name, category) VALUES (%s, %s, %s)",
             products
         )
-        conn.commit()
-
-        # Seed sales
-        sales = []
-        for product in products:
-            sku_id, _, _, price, store_id = product
-            current_date = start_date
-            while current_date <= end_date:
-                is_holiday = current_date.month in [10, 11] and random.random() < 0.1
-                quantity = random.randint(10, 50) if is_holiday else random.randint(1, 20)
-                revenue = quantity * price
-                sales.append((sku_id, store_id, current_date.date(), quantity, revenue))
-                current_date += timedelta(days=7)
-        cur.executemany(
-            "INSERT INTO sales (sku_id, store_id, sale_date, quantity, revenue) VALUES (%s, %s, %s, %s, %s)",
-            sales
-        )
-        conn.commit()
 
         # Seed inventory
-        inventory = []
-        for product in products:
-            sku_id, _, _, _, store_id = product
-            stock_level = random.randint(5, 30)
-            reorder_threshold = random.randint(50, 200)
-            last_updated = end_date.date()
-            inventory.append((sku_id, store_id, stock_level, reorder_threshold, last_updated))
+        inventory = [
+            (1, None, 1, 1000), (1, None, 2, 500), (1, None, 3, 800), (1, None, 4, 600), (1, None, 5, 700),  # Bengaluru DC
+            (None, 2, 1, 20), (None, 2, 2, 10), (None, 2, 3, 15), (None, 2, 4, 25), (None, 2, 5, 30),  # Chennai
+            (None, 3, 1, 5), (None, 3, 2, 3), (None, 3, 3, 0), (None, 3, 4, 10), (None, 3, 5, 8),  # Hyderabad (low stock)
+            (None, 4, 1, 30), (None, 4, 2, 15), (None, 4, 3, 20), (None, 4, 4, 10), (None, 4, 5, 5),  # Kochi (low stock)
+            (None, 5, 1, 25), (None, 5, 2, 20), (None, 5, 3, 15), (None, 5, 4, 8), (None, 5, 5, 10)  # Coimbatore (low stock)
+        ]
         cur.executemany(
-            "INSERT INTO inventory (sku_id, store_id, stock_level, reorder_threshold, last_updated) VALUES (%s, %s, %s, %s, %s)",
+            "INSERT INTO inventory (dc_id, store_id, sku_id, current_stock) VALUES (%s, %s, %s, %s)",
             inventory
         )
-        conn.commit()
 
-        # Seed reorder_alerts (ensure at least 10 entries)
-        reorder_alerts = []
-        for _ in range(10):
-            product = random.choice(products)
-            sku_id, _, _, _, store_id = product
-            stock_level = random.randint(5, 30)
-            reorder_threshold = stock_level + random.randint(20, 50)
-            priority_score = random.randint(10, 20)
-            reorder_alerts.append((sku_id, store_id, stock_level, reorder_threshold, end_date.date(), priority_score))
+        # Seed forecasts
+        forecasts = [
+            (2, 1, 120), (2, 2, 60), (2, 3, 80), (2, 4, 50), (2, 5, 70),  # Chennai
+            (3, 1, 150), (3, 2, 100), (3, 3, 120), (3, 4, 60), (3, 5, 80),  # Hyderabad (high demand)
+            (4, 1, 100), (4, 2, 50), (4, 3, 70), (4, 4, 40), (4, 5, 60),  # Kochi
+            (5, 1, 90), (5, 2, 45), (5, 3, 65), (5, 4, 35), (5, 5, 55)  # Coimbatore
+        ]
         cur.executemany(
-            "INSERT INTO reorder_alerts (sku_id, store_id, current_stock, reorder_threshold, alert_date, priority_score) VALUES (%s, %s, %s, %s, %s, %s)",
+            "INSERT INTO forecasts (store_id, sku_id, predicted_demand) VALUES (%s, %s, %s)",
+            forecasts
+        )
+
+        # Seed reorder_alerts
+        reorder_alerts = [
+            (2, 1, 20, 100, 0.9), (2, 2, 10, 50, 0.8), (2, 3, 15, 60, 0.7), (2, 4, 25, 50, 0.6), (2, 5, 30, 60, 0.5),  # Chennai
+            (3, 1, 5, 150, 1.0), (3, 2, 3, 100, 0.95), (3, 3, 0, 120, 1.0), (3, 4, 10, 60, 0.9), (3, 5, 8, 80, 0.95),  # Hyderabad (critical)
+            (4, 1, 30, 100, 0.85), (4, 2, 15, 50, 0.8), (4, 3, 20, 70, 0.75), (4, 4, 10, 40, 0.8), (4, 5, 5, 60, 0.9),  # Kochi
+            (5, 1, 25, 90, 0.8), (5, 2, 20, 45, 0.75), (5, 3, 15, 65, 0.8), (5, 4, 8, 35, 0.85), (5, 5, 10, 55, 0.9)  # Coimbatore
+        ]
+        cur.executemany(
+            "INSERT INTO reorder_alerts (store_id, sku_id, current_stock, reorder_threshold, priority_score) VALUES (%s, %s, %s, %s, %s)",
             reorder_alerts
         )
-        conn.commit()
 
-        # Seed delivery_routes
-        delivery_routes = []
-        vehicle_id = 2
-        for i, location in enumerate(locations):
-            store_id, _, _, _, _ = location
-            distance_km = random.uniform(10, 340)
-            estimated_time = distance_km / 40
-            eta_days = max(1, int(estimated_time / 24))
-            priority_score = random.randint(10, 20)
-            delivery_routes.append((vehicle_id, 1, store_id, i, distance_km, estimated_time, eta_days, priority_score))
+        # Seed delivery_routes (Cluster: Kochi+Coimbatore, Priority: Hyderabad)
+        delivery_routes = [
+            (2, 1, 3, 1, 1, 460, 6.5, 1, 1.0),  # Bengaluru DC to Hyderabad (460km, priority)
+            (2, 1, 4, 1, 2, 350, 5.0, 1, 0.85),  # Bengaluru DC to Kochi (350km, cluster)
+            (2, 1, 5, 1, 3, 50, 0.8, 1, 0.8),   # Kochi to Coimbatore (50km, cluster)
+            (2, 1, 2, 1, 4, 280, 4.0, 1, 0.7)   # Coimbatore to Chennai (280km)
+        ]
         cur.executemany(
-            "INSERT INTO delivery_routes (vehicle_id, sku_id, store_id, sequence, distance_km, estimated_time, eta_days, priority_score) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            "INSERT INTO delivery_routes (vehicle_id, dc_id, store_id, sku_id, sequence, distance_km, estimated_time, eta_days, priority_score) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
             delivery_routes
         )
-        conn.commit()
 
         # Seed tracking_logs
-        tracking_logs = []
-        for location in locations:
-            _, _, _, lat, lng = location
-            tracking_logs.append((vehicle_id, lat, lng, end_date))
+        tracking_logs = [(2, 12.9716, 77.5946, datetime.now())]  # Start at Bengaluru DC
         cur.executemany(
             "INSERT INTO tracking_logs (vehicle_id, latitude, longitude, timestamp) VALUES (%s, %s, %s, %s)",
             tracking_logs
         )
-        conn.commit()
 
-        # Seed logistics
-        logistics = []
-        for location in locations:
-            store_id, _, store_address, _, _ = location
-            distance_km = random.uniform(10, 340)
-            logistics.append(('Walmart DC, Plot No. 50, NH44, Bengaluru, Karnataka 562157', store_address, distance_km, store_id))
-        cur.executemany(
-            "INSERT INTO logistics (origin, destination, distance_km, store_id) VALUES (%s, %s, %s, %s)",
-            logistics
+        # Seed logistics_metrics
+        cur.execute(
+            "INSERT INTO logistics_metrics (run_date, total_distance_km, total_fuel_cost, total_co2_kg) VALUES (%s, %s, %s, %s)",
+            (datetime.now().date(), 1140, 114, 228)  # Total: 460+350+50+280=1140km
         )
-        conn.commit()
 
-        # Seed external_factors
-        external_factors = []
-        for date in pd.date_range(start_date, end_date, freq='15D'):
-            for store_id, _, _, _, _ in locations:
-                weather = random.choice(weather_options)
-                holiday = date.month in [10, 11] and random.random() < 0.1
-                disruption = random.choice(disruptions)
-                external_factors.append((date.date(), weather, holiday, disruption or 'None', store_id))
+        # Seed sales
+        sales = [
+            (1, 2, '2025-07-01', 10), (1, 2, '2025-07-02', 15),  # Chennai: Rice
+            (2, 2, '2025-07-01', 5), (2, 2, '2025-07-02', 8),    # Chennai: Oil
+            (3, 2, '2025-07-01', 12), (3, 2, '2025-07-02', 20),  # Chennai: Dal
+            (4, 2, '2025-07-01', 7), (4, 2, '2025-07-02', 9),    # Chennai: Soap
+            (5, 2, '2025-07-01', 25), (5, 2, '2025-07-02', 30),  # Chennai: Shampoo
+            (1, 3, '2025-07-01', 20), (1, 3, '2025-07-02', 25),  # Hyderabad: Rice
+            (2, 3, '2025-07-01', 10), (2, 3, '2025-07-02', 12),  # Hyderabad: Oil
+            (3, 3, '2025-07-01', 15), (3, 3, '2025-07-02', 18),  # Hyderabad: Dal
+            (4, 3, '2025-07-01', 5), (4, 3, '2025-07-02', 7),    # Hyderabad: Soap
+            (5, 3, '2025-07-01', 10), (5, 3, '2025-07-02', 12),  # Hyderabad: Shampoo
+            (1, 4, '2025-07-01', 15), (1, 4, '2025-07-02', 20),  # Kochi: Rice
+            (2, 4, '2025-07-01', 8), (2, 4, '2025-07-02', 10),   # Kochi: Oil
+            (3, 4, '2025-07-01', 12), (3, 4, '2025-07-02', 15),  # Kochi: Dal
+            (4, 4, '2025-07-01', 6), (4, 4, '2025-07-02', 8),    # Kochi: Soap
+            (5, 4, '2025-07-01', 10), (5, 4, '2025-07-02', 12),  # Kochi: Shampoo
+            (1, 5, '2025-07-01', 12), (1, 5, '2025-07-02', 18),  # Coimbatore: Rice
+            (2, 5, '2025-07-01', 7), (2, 5, '2025-07-02', 9),    # Coimbatore: Oil
+            (3, 5, '2025-07-01', 10), (3, 5, '2025-07-02', 13),  # Coimbatore: Dal
+            (4, 5, '2025-07-01', 5), (4, 5, '2025-07-02', 7),    # Coimbatore: Soap
+            (5, 5, '2025-07-01', 8), (5, 5, '2025-07-02', 10)    # Coimbatore: Shampoo
+        ]
         cur.executemany(
-            "INSERT INTO external_factors (factor_date, weather, holiday, disruption, store_id) VALUES (%s, %s, %s, %s, %s)",
-            external_factors
+            "INSERT INTO sales (sku_id, store_id, sale_date, quantity) VALUES (%s, %s, %s, %s)",
+            sales
         )
+
+        conn.commit()
+        cur.close()
+        conn.close()
+
+        # Connect to postgres
+        conn = psycopg2.connect(**POSTGRES_PARAMS)
+        cur = conn.cursor()
+
+        # Clear tables
+        cur.execute("TRUNCATE TABLE FulfillmentCenter, InventoryItem RESTART IDENTITY CASCADE;")
         conn.commit()
 
-        # Seed forecasts
-        forecasts = []
-        for product in products:
-            sku_id, _, _, _, store_id = product
-            current_date = start_date
-            while current_date <= end_date:
-                predicted_quantity = random.randint(20, 100)
-                lower_bound = predicted_quantity * 0.8
-                upper_bound = predicted_quantity * 1.2
-                forecasts.append((sku_id, current_date.date(), predicted_quantity, lower_bound, upper_bound, store_id))
-                current_date += timedelta(days=30)
+        # Seed FulfillmentCenter
+        fulfillment_centers = [
+            (1, 12.9716, 77.5946, 120, 500),  # Bengaluru
+            (2, 28.7041, 77.1025, 80, 400),   # Delhi
+            (3, 19.0760, 72.8777, 200, 600)   # Mumbai
+        ]
         cur.executemany(
-            "INSERT INTO forecasts (sku_id, forecast_date, predicted_quantity, lower_bound, upper_bound, store_id) VALUES (%s, %s, %s, %s, %s, %s)",
-            forecasts
+            "INSERT INTO FulfillmentCenter (id, latitude, longitude, current_workload, handling_capacity) VALUES (%s, %s, %s, %s, %s)",
+            fulfillment_centers
         )
-        conn.commit()
 
+        # Seed InventoryItem
+        inventory_items = [
+            (1, 'SKU001', 500, 1), (2, 'SKU002', 200, 1), (3, 'SKU003', 800, 1), (4, 'SKU004', 600, 1), (5, 'SKU005', 700, 1),  # Bengaluru
+            (6, 'SKU001', 300, 2), (7, 'SKU003', 150, 2),  # Delhi
+            (8, 'SKU002', 250, 3), (9, 'SKU004', 500, 3)   # Mumbai
+        ]
+        cur.executemany(
+            "INSERT INTO InventoryItem (id, sku, quantity, fulfillment_center_id) VALUES (%s, %s, %s, %s)",
+            inventory_items
+        )
+
+        conn.commit()
         print("Data seeding completed successfully")
     except Error as e:
         print(f"Error seeding data: {e}")
-        conn.rollback()
+        if conn:
+            conn.rollback()
     finally:
         if cur:
             cur.close()

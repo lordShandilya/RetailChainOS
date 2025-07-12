@@ -14,3 +14,4 @@ Readme.md
 **/.env
 **/**.osm.pbf
 **/**.log
+**/**/**.log

@@ -1,4 +1,3 @@
-// components/TrackPortal.jsx
 "use client";
 import { useEffect, useRef, useState } from "react";
 import mapboxgl from "mapbox-gl";
@@ -8,46 +7,82 @@ import "mapbox-gl/dist/mapbox-gl.css";
 const TrackPortal = ({ storeId }) => {
   const mapContainer = useRef(null);
   const map = useRef(null);
+  const popupRef = useRef(null);
   const [routeData, setRouteData] = useState(null);
   const [error, setError] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     if (!process.env.NEXT_PUBLIC_MAPBOX_TOKEN) {
-      setError("Mapbox access token is missing");
+      setError("Mapbox access token is missing in frontend");
       console.error("Error: NEXT_PUBLIC_MAPBOX_TOKEN is not set in .env.local");
       setLoading(false);
       return;
     }
+    console.log(
+      "Frontend Mapbox token:",
+      process.env.NEXT_PUBLIC_MAPBOX_TOKEN.substring(0, 10) + "...",
+    );
 
     mapboxgl.accessToken = process.env.NEXT_PUBLIC_MAPBOX_TOKEN;
     map.current = new mapboxgl.Map({
       container: mapContainer.current,
       style: "mapbox://styles/mapbox/streets-v12",
       center: [80.2707, 13.0827], // Chennai
-      zoom: 12,
+      zoom: 10, // Wider zoom for route visibility
     });
 
     map.current.on("load", () => {
       console.log("Map loaded");
-      // Load custom truck icon
       map.current.loadImage(
-        "https://img.icons8.com/color/48/000000/delivery-truck.png",
+        "https://img.icons8.com/fluency/48/truck--v1.png",
         (error, image) => {
           if (error) {
-            console.error("Error loading truck icon:", error);
+            console.error("Error loading truck icon:", error.message);
+            setError("Failed to load truck icon, using fallback");
+            map.current.addLayer({
+              id: "vehicle",
+              type: "circle",
+              source: "vehicle",
+              paint: {
+                "circle-radius": 8, // Smaller fallback
+                "circle-color": "#ff0000",
+                "circle-opacity": 0.9,
+                "circle-stroke-width": 2,
+                "circle-stroke-color": "#ffffff",
+              },
+            });
             return;
           }
           map.current.addImage("truck", image);
+          map.current.addLayer({
+            id: "vehicle",
+            type: "symbol",
+            source: "vehicle",
+            layout: {
+              "icon-image": "truck",
+              "icon-size": 0.8, // Smaller icon
+              "icon-allow-overlap": true,
+              "icon-ignore-placement": true,
+              "icon-anchor": "bottom", // Hover effect: anchor at bottom
+            },
+          });
+          // Add hover effect
+          map.current.getCanvas().style.cursor = "pointer";
+          map.current.on("mouseenter", "vehicle", () => {
+            map.current.setLayoutProperty("vehicle", "icon-size", 0.9);
+          });
+          map.current.on("mouseleave", "vehicle", () => {
+            map.current.setLayoutProperty("vehicle", "icon-size", 0.8);
+          });
         },
       );
-      // Add navigation controls
       map.current.addControl(new mapboxgl.NavigationControl());
       map.current.resize();
     });
     map.current.on("error", (e) => {
-      console.error("Map error:", JSON.stringify(e));
-      setError("Map failed to load: " + e.message);
+      console.error("Map error:", e.error?.message || JSON.stringify(e));
+      setError(`Map failed to load: ${e.error?.message || e.message}`);
       setLoading(false);
     });
 
@@ -58,7 +93,7 @@ const TrackPortal = ({ storeId }) => {
           `${process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:3001"}/track/${storeId}`,
         );
         const data = await response.json();
-        console.log("Fetched data:", JSON.stringify(data, null, 2));
+        console.log("Fetched track data:", JSON.stringify(data, null, 2));
         if (data.error) {
           setError(data.error);
           setLoading(false);
@@ -69,6 +104,10 @@ const TrackPortal = ({ storeId }) => {
           setLoading(false);
           return;
         }
+        console.log(
+          "Route coordinates count:",
+          data.route.geometry.coordinates.length,
+        );
         setRouteData(data);
         setError(null);
         setLoading(false);
@@ -106,9 +145,9 @@ const TrackPortal = ({ storeId }) => {
           source: "route",
           layout: { "line-join": "round", "line-cap": "round" },
           paint: {
-            "line-color": "#3b82f6",
-            "line-width": 5,
-            "line-opacity": 0.8,
+            "line-color": "#1e90ff", // Brighter blue
+            "line-width": 8, // Thicker for realism
+            "line-opacity": 0.9,
           },
         });
       } else {
@@ -130,23 +169,6 @@ const TrackPortal = ({ storeId }) => {
             },
           },
         });
-        map.current.addLayer({
-          id: "vehicle",
-          type: "symbol",
-          source: "vehicle",
-          layout: {
-            "icon-image": "truck",
-            "icon-size": 0.5,
-            "icon-allow-overlap": true,
-          },
-        });
-        // Add popup
-        new mapboxgl.Popup({ closeOnClick: false })
-          .setLngLat([data.vehicle.lng, data.vehicle.lat])
-          .setHTML(
-            `<h3>Store ${storeId}</h3><p>ETA: ${data.eta_days} day(s)</p>`,
-          )
-          .addTo(map.current);
       } else {
         map.current.getSource("vehicle").setData({
           type: "Feature",
@@ -156,10 +178,25 @@ const TrackPortal = ({ storeId }) => {
           },
         });
       }
+
+      if (popupRef.current) {
+        popupRef.current.remove();
+      }
+      popupRef.current = new mapboxgl.Popup({ closeOnClick: false, offset: 25 })
+        .setLngLat([data.vehicle.lng, data.vehicle.lat])
+        .setHTML(
+          `<div style="background: rgba(255, 255, 255, 0.95); padding: 10px; border-radius: 6px; box-shadow: 0 0 10px rgba(0,0,0,0.3); font-family: Arial;">
+             <h3 style="margin: 0; font-size: 16px; color: #111;">Store ${storeId}</h3>
+             <p style="margin: 5px 0; font-size: 14px; color: #111;">ETA: ${data.eta_days} day(s)</p>
+             <p style="margin: 0; font-size: 14px; color: #111;">Lat: ${data.vehicle.lat.toFixed(4)}, Lng: ${data.vehicle.lng.toFixed(4)}</p>
+           </div>`,
+        )
+        .addTo(map.current);
+
       map.current.setCenter([data.vehicle.lng, data.vehicle.lat]);
+      map.current.setZoom(10); // Adjust zoom for route
       map.current.resize();
 
-      // Animate vehicle along route (if coordinates > 1)
       if (data.route.geometry.coordinates.length > 1) {
         animateVehicle(data.route.geometry.coordinates);
       }
@@ -178,8 +215,11 @@ const TrackPortal = ({ storeId }) => {
             });
             map.current.setCenter([lng, lat]);
           }
+          if (popupRef.current) {
+            popupRef.current.setLngLat([lng, lat]);
+          }
           step++;
-          setTimeout(animate, 1000); // Move every 1s
+          setTimeout(animate, 1000);
         }
       };
       animate();
@@ -213,15 +253,15 @@ const TrackPortal = ({ storeId }) => {
             geometry: { type: "Point", coordinates: [data.lng, data.lat] },
           });
           map.current.setCenter([data.lng, data.lat]);
-          map.current.resize();
-          // Update popup
-          map.current.getLayer("vehicle") &&
-            new mapboxgl.Popup({ closeOnClick: false })
-              .setLngLat([data.lng, data.lat])
-              .setHTML(
-                `<h3>Store ${storeId}</h3><p>ETA: ${routeData?.eta_days || "N/A"} day(s)</p>`,
-              )
-              .addTo(map.current);
+          if (popupRef.current) {
+            popupRef.current.setLngLat([data.lng, data.lat]).setHTML(
+              `<div style="background: rgba(255, 255, 255, 0.95); padding: 10px; border-radius: 6px; box-shadow: 0 0 10px rgba(0,0,0,0.3); font-family: Arial;">
+                 <h3 style="margin: 0; font-size: 16px; color: #111;">Store ${storeId}</h3>
+                 <p style="margin: 5px 0; font-size: 14px; color: #111;">ETA: ${routeData?.eta_days || "N/A"} day(s)</p>
+                 <p style="margin: 0; font-size: 14px; color: #111;">Lat: ${data.lat.toFixed(4)}, Lng: ${data.lng.toFixed(4)}</p>
+               </div>`,
+            );
+          }
         }
       }
     });
@@ -244,7 +284,8 @@ const TrackPortal = ({ storeId }) => {
       {routeData && routeData.vehicle && !loading && (
         <div>
           <p>
-            Vehicle Location: {routeData.vehicle.lat}, {routeData.vehicle.lng}
+            Vehicle Location: {routeData.vehicle.lat.toFixed(4)},{" "}
+            {routeData.vehicle.lng.toFixed(4)}
           </p>
           <p>ETA: {routeData.eta_days} day(s)</p>
         </div>
