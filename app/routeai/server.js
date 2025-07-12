@@ -51,29 +51,61 @@ app.get("/route/:vehicleId", async (req, res) => {
         .json({ error: `No routes for vehicle ${vehicleId}` });
     }
 
+    // Validate and fix coordinates
     const coordinates = [
-      [rows[0].dc_lng, rows[0].dc_lat],
+      [rows[0].dc_lng || 77.5946, rows[0].dc_lat || 12.9716], // Fallback to Bengaluru
       ...rows.map((r) => [r.lng, r.lat]),
     ];
+    const validCoords = coordinates.every(
+      ([lng, lat]) =>
+        typeof lng === "number" &&
+        typeof lat === "number" &&
+        lng >= -180 &&
+        lng <= 180 &&
+        lat >= -90 &&
+        lat <= 90,
+    );
+    if (!validCoords) {
+      console.error("Invalid coordinates:", coordinates);
+      return res
+        .status(422)
+        .json({ error: "Invalid coordinates in route data" });
+    }
+
+    let routeGeometry = { type: "LineString", coordinates };
+    let etaDays = rows[0].eta_days || 1;
+
     if (!process.env.ORS_API_KEY) {
+      console.warn("Mapbox access token missing, using linear route");
       return res.status(500).json({ error: "Mapbox access token is missing" });
     }
+    console.log(
+      "Using Mapbox token:",
+      process.env.ORS_API_KEY.substring(0, 10) + "...",
+    );
     const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates.map((c) => c.join(",")).join(";")}?geometries=geojson&access_token=${process.env.ORS_API_KEY}`;
-    let mapboxResponse;
+    console.log("Mapbox URL:", mapboxUrl);
     try {
-      mapboxResponse = await axios.get(mapboxUrl);
+      const mapboxResponse = await axios.get(mapboxUrl);
+      console.log(
+        "Mapbox response:",
+        JSON.stringify(mapboxResponse.data, null, 2),
+      );
+      if (!mapboxResponse.data.routes || !mapboxResponse.data.routes[0]) {
+        console.error("Mapbox API returned no routes:", mapboxResponse.data);
+        throw new Error("No routes returned by Mapbox");
+      }
+      routeGeometry = mapboxResponse.data.routes[0].geometry;
+      const durationSeconds = mapboxResponse.data.routes[0].duration || 0;
+      etaDays = Math.max(1, Math.ceil(durationSeconds / (24 * 3600)));
     } catch (error) {
-      console.error("Mapbox API error:", error.response?.data || error.message);
-      return res.status(error.response?.status || 500).json({
-        error: `Mapbox API error: ${error.response?.data?.message || error.message}`,
-      });
+      console.error(
+        "Mapbox API error:",
+        error.response?.data?.message || error.message,
+        error.response?.data?.error_detail || "",
+      );
+      console.warn("Falling back to linear route due to Mapbox error");
     }
-    const routeGeometry = mapboxResponse.data.routes[0]?.geometry || {
-      type: "LineString",
-      coordinates,
-    };
-    const durationSeconds = mapboxResponse.data.routes[0]?.duration || 0;
-    const etaDays = Math.ceil(durationSeconds / (24 * 3600)); // Convert seconds to days
 
     const { rows: tracking } = await pool.query(
       `
@@ -95,7 +127,7 @@ app.get("/route/:vehicleId", async (req, res) => {
     });
   } catch (error) {
     console.error("Route error:", error.message);
-    res.status(500).json({ error: error.message });
+    res.status(500).json({ error: `Route error: ${error.message}` });
   }
 });
 
