@@ -1,19 +1,21 @@
 const express = require("express");
+const { Pool } = require("pg");
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcrypt");
-const { Pool } = require("pg");
-const dotenv = require("dotenv");
-const axios = require("axios");
 const cors = require("cors");
 const socketIo = require("socket.io");
 const http = require("http");
-
-dotenv.config();
+const axios = require("axios");
+require("dotenv").config();
 
 const app = express();
 const server = http.createServer(app);
 const io = socketIo(server, {
-  cors: { origin: "http://localhost:3000", methods: ["GET", "POST"] },
+  cors: {
+    origin: "http://localhost:3000",
+    methods: ["GET", "POST"],
+    credentials: true,
+  },
 });
 
 const pool = new Pool({
@@ -24,62 +26,34 @@ const pool = new Pool({
   port: 5432,
 });
 
-app.use(cors());
+app.use(cors({ origin: "http://localhost:3000", credentials: true }));
 app.use(express.json());
 
-function authenticate(allowedRoles) {
-  return async (req, res, next) => {
-    const token = req.headers.authorization?.split(" ")[1];
-    if (!token) {
-      console.error("Authentication error: No token provided");
-      return res.status(401).json({ error: "No token provided" });
-    }
-    try {
-      const decoded = jwt.verify(
-        token,
-        process.env.JWT_SECRET || "your_jwt_secret",
-      );
-      console.log("Decoded token:", decoded);
-      const { rows } = await pool.query(
-        "SELECT * FROM users WHERE username = $1",
-        [decoded.username],
-      );
-      if (!rows.length) {
-        console.error(
-          "Authentication error: User not found for username:",
-          decoded.username,
-        );
-        return res.status(401).json({ error: "Invalid token" });
-      }
-      const user = rows[0];
-      if (!allowedRoles.includes(user.role)) {
-        console.error("Authentication error: Unauthorized role:", user.role);
-        return res.status(403).json({ error: "Unauthorized role" });
-      }
-      req.user = user;
-      next();
-    } catch (error) {
-      console.error("Authentication error:", error.message);
-      return res.status(401).json({ error: "Invalid token" });
-    }
-  };
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers["authorization"];
+  const token = authHeader && authHeader.split(" ")[1];
+  if (!token) return res.status(401).json({ error: "Access token required" });
+  try {
+    const user = jwt.verify(token, process.env.JWT_SECRET || "your_jwt_secret");
+    req.user = user;
+    next();
+  } catch (err) {
+    res.status(403).json({ error: "Invalid or expired token" });
+  }
 }
 
 app.post("/login", async (req, res) => {
   const { username, password } = req.body;
   try {
-    const { rows } = await pool.query(
-      "SELECT * FROM users WHERE username = $1",
-      [username],
-    );
-    if (!rows.length) {
-      console.error("Login error: User not found:", username);
+    const result = await pool.query("SELECT * FROM users WHERE username = $1", [
+      username,
+    ]);
+    const user = result.rows[0];
+    if (!user) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
-    const user = rows[0];
-    const match = await bcrypt.compare(password, user.password);
-    if (!match) {
-      console.error("Login error: Password mismatch for user:", username);
+    const validPassword = await bcrypt.compare(password, user.password);
+    if (!validPassword) {
       return res.status(401).json({ error: "Invalid credentials" });
     }
     const token = jwt.sign(
@@ -92,382 +66,306 @@ app.post("/login", async (req, res) => {
       process.env.JWT_SECRET || "your_jwt_secret",
       { expiresIn: "1h" },
     );
-    console.log("Generated token for user:", username);
     res.json({
       token,
       role: user.role,
       store_id: user.store_id,
       vehicle_id: user.vehicle_id,
     });
-  } catch (error) {
-    console.error("Login error:", error.message);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
-// SupplySync: Get order list
+
+app.get("/api/stores", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Access denied" });
+  }
+  try {
+    const result = await pool.query("SELECT * FROM stores");
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/api/stores/verified", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Access denied" });
+  }
+  try {
+    const result = await pool.query(
+      "SELECT * FROM stores WHERE verified = true",
+    );
+    res.json(result.rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.get(
-  "/inventory/:storeId",
-  authenticate(["store_owner"]),
+  "/api/stores/:storeId/inventory",
+  authenticateToken,
   async (req, res) => {
-    const { storeId } = req.params;
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ error: "Access denied" });
+    }
     try {
-      const { rows } = await pool.query(
+      const result = await pool.query(
         `
-      SELECT DISTINCT ra.store_id, ra.sku_id, p.name, ra.current_stock, ra.reorder_threshold,
-             f.predicted_demand, GREATEST(0, LEAST(f.predicted_demand, ra.reorder_threshold) - ra.current_stock) as quantity
-      FROM reorder_alerts ra
-      JOIN products p ON ra.sku_id = p.sku_id
-      JOIN forecasts f ON ra.store_id = f.store_id AND ra.sku_id = f.sku_id
-      JOIN stores s ON ra.store_id = s.store_id
-      WHERE (s.store_id::text = $1 OR LOWER(s.store_location) = LOWER($1))
-        AND ra.current_stock < ra.reorder_threshold
+      SELECT i.*, p.name AS sku_name, f.latitude, f.longitude
+      FROM inventory i
+      JOIN products p ON i.sku_id = p.sku_id
+      JOIN FulfillmentCenter f ON i.dc_id = f.id
+      WHERE i.store_id = $1
     `,
-        [storeId],
+        [req.params.storeId],
       );
-      if (!rows.length) {
-        return res
-          .status(404)
-          .json({ error: `No order list for store: ${storeId}` });
-      }
-      res.json({
-        store_id: rows[0].store_id,
-        items: rows.map((r) => ({
-          sku_id: r.sku_id,
-          name: r.name,
-          quantity: Math.ceil(r.quantity),
-          verified: false,
-        })),
-      });
-    } catch (error) {
-      console.error("Inventory error:", error.message);
-      res.status(500).json({ error: error.message });
+      res.json(result.rows);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
     }
   },
 );
 
-// SupplySync: Submit verified order
-app.post(
-  "/submit-order/:storeId",
-  authenticate(["store_owner"]),
-  async (req, res) => {
-    const { storeId } = req.params;
-    const { items } = req.body;
-    try {
-      const { rows: store } = await pool.query(
-        `
-      SELECT store_id, lat, lng
-      FROM stores
-      WHERE store_id::text = $1 OR LOWER(store_location) = LOWER($1)
-    `,
-        [storeId],
-      );
-      if (!store.length) {
-        return res
-          .status(404)
-          .json({ error: `No store found for: ${storeId}` });
-      }
-      const { store_id, lat, lng } = store[0];
-
-      const assignments = [];
-      for (const item of items) {
-        if (!item.verified) continue; // Only process verified items
-        const skuMap = {
-          1: "SKU001",
-          2: "SKU002",
-          3: "SKU003",
-          4: "SKU004",
-          5: "SKU005",
-        };
-        const response = await axios.post(
-          "http://localhost:8000/fulfillment/assign",
-          {
-            latitude: lat,
-            longitude: lng,
-            sku: skuMap[item.sku_id],
-            quantity: item.quantity,
-          },
-          { headers: { "Content-Type": "application/json" } },
-        );
-        const { fulfillment_center_id } = response.data;
-        assignments.push({ ...item, dc_id: fulfillment_center_id });
-
-        await pool.query(
-          "UPDATE inventory SET current_stock = current_stock - $1 WHERE dc_id = $2 AND sku_id = $3",
-          [item.quantity, fulfillment_center_id, item.sku_id],
-        );
-        await pool.query(
-          "INSERT INTO delivery_routes (vehicle_id, dc_id, store_id, sku_id, sequence, distance_km, estimated_time, eta_days, priority_score) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) ON CONFLICT (vehicle_id, store_id, sku_id) DO UPDATE SET sequence = EXCLUDED.sequence",
-          [2, fulfillment_center_id, store_id, item.sku_id, 1, 10, 0.5, 1, 0.9],
-        );
-      }
-      res.json({ store_id, assignments });
-    } catch (error) {
-      console.error("Submit order error:", error.message);
-      res.status(500).json({ error: error.message });
-    }
-  },
-);
-
-// TrackX: Track store
-
-app.get("/track/:storeId", authenticate(["store_owner"]), async (req, res) => {
+app.get("/inventory/:storeId", authenticateToken, async (req, res) => {
   const { storeId } = req.params;
+  if (req.user.role === "store_owner" && req.user.store_id != storeId) {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  if (req.user.role !== "admin" && req.user.role !== "store_owner") {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
   try {
-    const { rows: store } = await pool.query(
-      `
-      SELECT store_id, store_location, lat, lng
-      FROM stores
-      WHERE LOWER(store_location) = LOWER($1) OR store_id::text = $1
-    `,
+    // Find store coordinates
+    const storeQuery = await pool.query(
+      "SELECT lat, lng FROM stores WHERE store_id = $1",
       [storeId],
     );
-    if (!store.length) {
-      console.error(`No store found for: ${storeId}`);
-      return res.status(404).json({ error: `No store found for: ${storeId}` });
+    if (storeQuery.rows.length === 0) {
+      console.log(`No store found for store_id=${storeId}`);
+      return res.status(404).json({ error: "Store not found" });
     }
-    const store_id = store[0].store_id;
+    const { lat, lng } = storeQuery.rows[0];
 
-    const { rows: routes } = await pool.query(
-      `
-      SELECT dr.vehicle_id, dr.eta_days, dc.latitude as dc_lat, dc.longitude as dc_lng
-      FROM delivery_routes dr
-      JOIN FulfillmentCenter dc ON dr.dc_id = dc.id
-      WHERE dr.store_id = $1
-      ORDER BY dr.created_at DESC LIMIT 1
-    `,
-      [store_id],
+    // Find nearest fulfillment center
+    const fcQuery = await pool.query(
+      "SELECT id, latitude, longitude FROM fulfillmentcenter",
     );
-    if (!routes.length) {
-      console.error(`No delivery routes found for store_id: ${store_id}`);
-      return res
-        .status(404)
-        .json({
-          error: `No delivery routes found for store: ${store[0].store_location}`,
-        });
-    }
-
-    const vehicleId = routes[0].vehicle_id;
-    let routeData;
-    try {
-      const response = await axios.get(
-        `http://localhost:3002/route/${vehicleId}`,
+    let nearestFcId = null;
+    let minDistance = Infinity;
+    for (const fc of fcQuery.rows) {
+      const distance = Math.sqrt(
+        Math.pow(parseFloat(fc.latitude) - parseFloat(lat), 2) +
+          Math.pow(parseFloat(fc.longitude) - parseFloat(lng), 2),
       );
-      routeData = response.data;
+      if (distance < minDistance) {
+        minDistance = distance;
+        nearestFcId = fc.id;
+      }
+    }
+    console.log(
+      `Nearest fulfillment center for store_id=${storeId}: fc_id=${nearestFcId}`,
+    );
+
+    // Fetch inventory with corrected join
+    const inventoryQuery = await pool.query(
+      `SELECT i.fulfillment_center_id AS store_id, p.sku_id AS sku_id,
+              i.quantity AS current_stock, p.name, p.category
+       FROM inventoryitem i
+       JOIN products p ON i.sku = p.name
+       WHERE i.fulfillment_center_id = $1`,
+      [nearestFcId],
+    );
+
+    if (inventoryQuery.rows.length === 0) {
       console.log(
-        "Track route coordinates count:",
-        routeData.route.geometry.coordinates.length,
+        `No inventory found for fulfillment_center_id=${nearestFcId}`,
       );
-    } catch (error) {
-      console.error(
-        "Proxy track error:",
-        error.response?.data?.message || error.message,
-      );
-      routeData = {
-        route: {
-          geometry: {
-            type: "LineString",
-            coordinates: [
-              [routes[0].dc_lng, routes[0].dc_lat],
-              [store[0].lng, store[0].lat],
-            ],
-          },
-        },
-        vehicle: { lat: store[0].lat, lng: store[0].lng },
-        eta_days: routes[0].eta_days,
-      };
+      return res.status(404).json({ error: "No inventory found for store" });
     }
+    console.log(
+      `Inventory for store_id=${storeId} (fc_id=${nearestFcId}):`,
+      inventoryQuery.rows,
+    );
+    res.json({ items: inventoryQuery.rows });
+  } catch (err) {
+    console.error("Inventory error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
 
-    const { rows: tracking } = await pool.query(
+app.post("/submit-order/:storeId", authenticateToken, async (req, res) => {
+  if (
+    req.user.role !== "store_owner" ||
+    parseInt(req.user.store_id) !== parseInt(req.params.storeId)
+  ) {
+    return res.status(403).json({ error: "Access denied" });
+  }
+  const { items } = req.body;
+  try {
+    await pool.query("BEGIN");
+    for (const item of items) {
+      await pool.query(
+        "UPDATE inventory SET current_stock = $1 WHERE store_id = $2 AND sku_id = $3",
+        [item.quantity, req.params.storeId, item.sku_id],
+      );
+    }
+    await pool.query("COMMIT");
+    res.json({ message: "Order submitted successfully" });
+  } catch (err) {
+    await pool.query("ROLLBACK");
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get("/stores", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Unauthorized" });
+  }
+  try {
+    const storesQuery = await pool.query(
+      "SELECT store_id, store_location FROM stores",
+    );
+    if (storesQuery.rows.length === 0) {
+      return res.status(404).json({ error: "No stores found" });
+    }
+    res.json(storesQuery.rows);
+    console.log("Fetched stores:", storesQuery.rows);
+  } catch (err) {
+    console.error("Stores error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+app.get("/track/:storeId", authenticateToken, async (req, res) => {
+  try {
+    // Find the vehicle serving the store
+    const routeResult = await pool.query(
       `
-      SELECT latitude, longitude
-      FROM tracking_logs
-      WHERE vehicle_id = $1
-      ORDER BY timestamp DESC LIMIT 1
+      SELECT dr.vehicle_id, dr.dc_id, dr.eta_days
+      FROM delivery_routes dr
+      WHERE dr.store_id = $1
+      ORDER BY dr.sequence
+      LIMIT 1
     `,
-      [vehicleId],
+      [req.params.storeId],
+    );
+    if (routeResult.rows.length === 0) {
+      return res.status(404).json({ error: "No route found for store" });
+    }
+    const { vehicle_id, dc_id, eta_days } = routeResult.rows[0];
+
+    // Fetch route from RouteAI
+    const routeResponse = await axios.get(
+      `http://localhost:3002/route/${vehicle_id}`,
+    );
+    const { route, vehicle } = routeResponse.data;
+
+    // Fetch vehicle location from tracking_logs
+    const tracking = await pool.query(
+      "SELECT latitude AS lat, longitude AS lng, timestamp FROM tracking_logs WHERE vehicle_id = $1 ORDER BY timestamp DESC LIMIT 1",
+      [vehicle_id],
+    );
+    console.log(
+      "Track /track/:storeId:",
+      req.params.storeId,
+      "Tracking result:",
+      tracking.rows,
     );
 
     res.json({
-      route: { geometry: routeData.route.geometry },
-      vehicle: {
-        lat: tracking.length ? tracking[0].latitude : routeData.vehicle.lat,
-        lng: tracking.length ? tracking[0].longitude : routeData.vehicle.lng,
-      },
-      dc: { lat: routes[0].dc_lat, lng: routes[0].dc_lng },
-      eta_days: routeData.eta_days,
+      vehicle: tracking.rows[0] || vehicle, // Fallback to RouteAI vehicle location
+      route: route,
+      eta_days: eta_days || routeResponse.data.eta_days,
     });
-  } catch (error) {
-    console.error("Track store error:", error.message);
-    res.status(500).json({ error: error.message });
+  } catch (err) {
+    console.error("Error in /track/:storeId:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// RouteAI: Get route details
-
-app.get(
-  "/route/:vehicleId",
-  authenticate(["delivery_partner"]),
-  async (req, res) => {
-    const { vehicleId } = req.params;
-    try {
-      const { rows } = await pool.query(
-        `
-      SELECT dr.*, s.lat, s.lng, dc.latitude as dc_lat, dc.longitude as dc_lng
-      FROM delivery_routes dr
-      JOIN stores s ON dr.store_id = s.store_id
-      JOIN FulfillmentCenter dc ON dr.dc_id = dc.id
-      WHERE dr.vehicle_id = $1
-      ORDER BY dr.sequence
-    `,
-        [vehicleId],
-      );
-      if (!rows.length) {
-        console.error(`No routes for vehicle ${vehicleId}`);
-        return res
-          .status(404)
-          .json({ error: `No routes for vehicle ${vehicleId}` });
-      }
-
-      const coordinates = [
-        [rows[0].dc_lng || 77.5946, rows[0].dc_lat || 12.9716], // Fallback to Bengaluru
-        ...rows.map((r) => [r.lng, r.lat]),
-      ];
-      const validCoords = coordinates.every(
-        ([lng, lat]) =>
-          typeof lng === "number" &&
-          typeof lat === "number" &&
-          lng >= -180 &&
-          lng <= 180 &&
-          lat >= -90 &&
-          lat <= 90,
-      );
-      if (!validCoords) {
-        console.error("Invalid coordinates:", coordinates);
-        return res
-          .status(422)
-          .json({ error: "Invalid coordinates in route data" });
-      }
-
-      let routeGeometry = { type: "LineString", coordinates };
-      let etaDays = rows[0].eta_days || 2;
-
-      if (!process.env.ORS_API_KEY) {
-        console.warn("Mapbox access token missing, using linear route");
-      } else {
-        console.log(
-          "Using Mapbox token:",
-          process.env.ORS_API_KEY.substring(0, 10) + "...",
-        );
-        const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates.map((c) => c.join(",")).join(";")}?geometries=geojson&access_token=${process.env.ORS_API_KEY}`;
-        console.log("Mapbox URL:", mapboxUrl);
-        try {
-          const mapboxResponse = await axios.get(mapboxUrl);
-          console.log(
-            "Mapbox response:",
-            JSON.stringify(mapboxResponse.data, null, 2),
-          );
-          if (!mapboxResponse.data.routes || !mapboxResponse.data.routes[0]) {
-            console.error(
-              "Mapbox API returned no routes:",
-              mapboxResponse.data,
-            );
-            throw new Error("No routes returned by Mapbox");
-          }
-          routeGeometry = mapboxResponse.data.routes[0].geometry;
-          const durationSeconds = mapboxResponse.data.routes[0].duration || 0;
-          etaDays = Math.max(1, Math.ceil(durationSeconds / (24 * 3600)));
-        } catch (error) {
-          console.error(
-            "Mapbox API error:",
-            error.response?.data?.message || error.message,
-          );
-          console.warn("Falling back to linear route");
-        }
-      }
-
-      const { rows: tracking } = await pool.query(
-        `
-      SELECT latitude, longitude
-      FROM tracking_logs
-      WHERE vehicle_id = $1
-      ORDER BY timestamp DESC LIMIT 1
-    `,
-        [vehicleId],
-      );
-
-      res.json({
-        route: { geometry: routeGeometry },
-        vehicle: {
-          lat: tracking.length ? tracking[0].latitude : rows[0].lat,
-          lng: tracking.length ? tracking[0].longitude : rows[0].lng,
-        },
-        eta_days: etaDays,
-      });
-    } catch (error) {
-      console.error("Route error:", error.message);
-      res.status(500).json({ error: `Route error: ${error.message}` });
-    }
-  },
-);
-
-// SupplySync Admin: Optimize routes
-app.get("/optimize-routes", authenticate(["admin"]), async (req, res) => {
+app.get("/route/:vehicleId", authenticateToken, async (req, res) => {
+  if (
+    req.user.role !== "delivery_partner" ||
+    req.user.vehicle_id !== parseInt(req.params.vehicleId)
+  ) {
+    return res.status(403).json({ error: "Access denied" });
+  }
   try {
-    const response = await axios.get("http://localhost:3002/optimize-routes");
-    res.json(response.data);
-  } catch (error) {
-    console.error(
-      "Proxy optimize-routes error:",
-      error.response?.data?.message || error.message,
+    // Fetch route from RouteAI
+    const routeResponse = await axios.get(
+      `http://localhost:3002/route/${req.params.vehicleId}`,
     );
-    res
-      .status(error.response?.status || 500)
-      .json({ error: error.response?.data?.message || error.message });
+    const { route, vehicle, eta_days } = routeResponse.data;
+
+    // Fetch vehicle location from tracking_logs
+    const tracking = await pool.query(
+      "SELECT latitude AS lat, longitude AS lng, timestamp FROM tracking_logs WHERE vehicle_id = $1 ORDER BY timestamp DESC LIMIT 1",
+      [req.params.vehicleId],
+    );
+    console.log(
+      "Track /route/:vehicleId:",
+      req.params.vehicleId,
+      "Tracking result:",
+      tracking.rows,
+    );
+
+    res.json({
+      vehicle: tracking.rows[0] || vehicle, // Fallback to RouteAI vehicle location
+      route: route,
+      eta_days,
+    });
+  } catch (err) {
+    console.error("Error in /route/:vehicleId:", err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Socket.IO for location updates
+app.get("/optimize-routes", authenticateToken, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Access denied" });
+  }
+  try {
+    // Forward to RouteAI
+    const routeResponse = await axios.get(
+      "http://localhost:3002/optimize-routes",
+    );
+    res.json(routeResponse.data);
+  } catch (err) {
+    console.error("Error in /optimize-routes:", err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 io.on("connection", (socket) => {
-  console.log("Socket.IO client connected");
   socket.on("update-location", async (data) => {
-    const { vehicleId, storeId, lat, lng, token } = data;
+    const { vehicleId, lat, lng, token } = data;
     try {
-      const decoded = jwt.verify(token, process.env.JWT_SECRET || "secret_key");
-      if (
-        decoded.role !== "delivery_partner" ||
-        decoded.vehicle_id !== parseInt(vehicleId)
-      ) {
-        socket.emit("error", { error: "Unauthorized location update" });
+      const user = jwt.verify(
+        token,
+        process.env.JWT_SECRET || "your_jwt_secret",
+      );
+      if (user.vehicle_id !== parseInt(vehicleId)) {
+        socket.emit("error", { error: "Unauthorized" });
         return;
       }
       await pool.query(
         "INSERT INTO tracking_logs (vehicle_id, latitude, longitude, timestamp) VALUES ($1, $2, $3, NOW())",
         [vehicleId, lat, lng],
       );
-      const { rows } = await pool.query(
-        `
-        SELECT s.store_location
-        FROM delivery_routes dr
-        JOIN stores s ON dr.store_id = s.store_id
-        WHERE dr.vehicle_id = $1
-        ORDER BY dr.sequence DESC LIMIT 1
-      `,
-        [vehicleId],
-      );
       io.emit("location-update", {
-        storeId: storeId || rows[0]?.store_location,
+        vehicleId,
         lat,
         lng,
-        vehicleId,
+        storeId: data.storeId,
       });
-    } catch (error) {
-      console.error("Socket update-location error:", error.message);
-      socket.emit("error", { error: error.message });
+    } catch (err) {
+      socket.emit("error", { error: err.message });
     }
   });
 });
 
-server.listen(3001, () =>
-  console.log(`SupplySync server running on http://localhost:3001`),
-);
+server.listen(3001, () => {
+  console.log("Server running on port 3001");
+});

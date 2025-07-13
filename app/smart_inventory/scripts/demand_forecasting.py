@@ -1,4 +1,3 @@
-
 """
 demand_forecasting.py
 Purpose: Generates demand forecasts for SKUs based on sales data and creates reorder alerts for SmartInventory.
@@ -76,10 +75,10 @@ def generate_reorder_alerts(conn, cur):
         if df.empty:
             logging.warning("No forecast data for reorder alerts")
             return
-        safety_stock = 20  # Reduced for realism
+        safety_stock = 20
         df['reorder_threshold'] = df['predicted_demand'] + safety_stock
         df['priority_score'] = (df['reorder_threshold'] - df['current_stock']) / df['reorder_threshold'].clip(lower=1)
-        df['priority_score'] = df['priority_score'].clip(0, 1)  # Normalize 0-1
+        df['priority_score'] = df['priority_score'].clip(0, 1)
         alerts = df[df['current_stock'] < df['reorder_threshold']][[
             'store_id', 'sku_id', 'current_stock', 'reorder_threshold', 'priority_score'
         ]]
@@ -106,8 +105,8 @@ def run_forecasting():
         cur = conn.cursor()
         cur.execute("TRUNCATE TABLE forecasts RESTART IDENTITY;")
         conn.commit()
-        sku_ids = [1, 2, 3, 4, 5]  # Demo SKUs
-        store_ids = [1, 2, 3, 4, 5]  # All stores
+        sku_ids = [1, 2, 3, 4, 5]
+        store_ids = [1, 2, 3, 4, 5, 6, 7]  # Updated to 7 stores
         for store_id in store_ids:
             for sku_id in sku_ids:
                 forecast_sku(sku_id, store_id, conn, cur)

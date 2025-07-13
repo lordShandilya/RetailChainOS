@@ -1,9 +1,17 @@
 const express = require("express");
 const axios = require("axios");
 const { Pool } = require("pg");
+const cors = require("cors");
 require("dotenv").config();
 
 const app = express();
+app.use(
+  cors({
+    origin: ["http://localhost:3000", "http://localhost:3001"],
+    methods: ["GET", "POST"],
+    credentials: true,
+  }),
+);
 app.use(express.json());
 
 const pool = new Pool({
@@ -28,30 +36,28 @@ const haversineDistance = (lat1, lon1, lat2, lon2) => {
   return R * c;
 };
 
-// console.log(`ors api key:${process.env.ORS_API_KEY}`);
-// console.log("ors api key:", process.env.ORS_API_KEY);
-
 app.get("/route/:vehicleId", async (req, res) => {
   const { vehicleId } = req.params;
   try {
     const { rows } = await pool.query(
       `
-      SELECT dr.*, s.lat, s.lng, dc.latitude as dc_lat, dc.longitude as dc_lng
-      FROM delivery_routes dr
-      JOIN stores s ON dr.store_id = s.store_id
-      LEFT JOIN FulfillmentCenter dc ON dr.dc_id = dc.id
-      WHERE dr.vehicle_id = $1
-      ORDER BY dr.sequence
-    `,
+         SELECT dr.*, s.lat, s.lng, dc.latitude as dc_lat, dc.longitude as dc_lng
+         FROM delivery_routes dr
+         JOIN stores s ON dr.store_id = s.store_id
+         LEFT JOIN FulfillmentCenter dc ON dr.dc_id = dc.id
+         WHERE dr.vehicle_id = $1
+         ORDER BY dr.sequence
+       `,
       [vehicleId],
     );
     if (!rows.length) {
+      console.error(`No routes found for vehicle ${vehicleId}`);
       return res
         .status(404)
         .json({ error: `No routes for vehicle ${vehicleId}` });
     }
 
-    // Validate and fix coordinates
+    // Build coordinates: DC -> stores
     const coordinates = [
       [rows[0].dc_lng || 77.5946, rows[0].dc_lat || 12.9716], // Fallback to Bengaluru
       ...rows.map((r) => [r.lng, r.lat]),
@@ -74,16 +80,20 @@ app.get("/route/:vehicleId", async (req, res) => {
 
     let routeGeometry = { type: "LineString", coordinates };
     let etaDays = rows[0].eta_days || 1;
+    let distanceKm = 0;
 
-    if (!process.env.ORS_API_KEY) {
+    const mapboxToken = process.env.MAPBOX_TOKEN;
+    if (!mapboxToken) {
       console.warn("Mapbox access token missing, using linear route");
-      return res.status(500).json({ error: "Mapbox access token is missing" });
+      return res.status(200).json({
+        route: routeGeometry,
+        vehicle: { lat: coordinates[0][1], lng: coordinates[0][0] },
+        eta_days: etaDays,
+        distance_km: distanceKm,
+      });
     }
-    console.log(
-      "Using Mapbox token:",
-      process.env.ORS_API_KEY.substring(0, 10) + "...",
-    );
-    const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates.map((c) => c.join(",")).join(";")}?geometries=geojson&access_token=${process.env.ORS_API_KEY}`;
+
+    const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates.map((c) => c.join(",")).join(";")}?geometries=geojson&access_token=${mapboxToken}`;
     console.log("Mapbox URL:", mapboxUrl);
     try {
       const mapboxResponse = await axios.get(mapboxUrl);
@@ -97,33 +107,34 @@ app.get("/route/:vehicleId", async (req, res) => {
       }
       routeGeometry = mapboxResponse.data.routes[0].geometry;
       const durationSeconds = mapboxResponse.data.routes[0].duration || 0;
+      distanceKm = (mapboxResponse.data.routes[0].distance || 0) / 1000; // Convert meters to km
       etaDays = Math.max(1, Math.ceil(durationSeconds / (24 * 3600)));
     } catch (error) {
       console.error(
         "Mapbox API error:",
         error.response?.data?.message || error.message,
-        error.response?.data?.error_detail || "",
       );
       console.warn("Falling back to linear route due to Mapbox error");
     }
 
     const { rows: tracking } = await pool.query(
       `
-      SELECT latitude, longitude
-      FROM tracking_logs
-      WHERE vehicle_id = $1
-      ORDER BY timestamp DESC LIMIT 1
-    `,
+         SELECT latitude, longitude
+         FROM tracking_logs
+         WHERE vehicle_id = $1
+         ORDER BY timestamp DESC LIMIT 1
+       `,
       [vehicleId],
     );
 
     res.json({
       route: { geometry: routeGeometry },
       vehicle: {
-        lat: tracking.length ? tracking[0].latitude : rows[0].lat,
-        lng: tracking.length ? tracking[0].longitude : rows[0].lng,
+        lat: tracking.length ? tracking[0].latitude : coordinates[0][1],
+        lng: tracking.length ? tracking[0].longitude : coordinates[0][0],
       },
       eta_days: etaDays,
+      distance_km: distanceKm,
     });
   } catch (error) {
     console.error("Route error:", error.message);
@@ -134,16 +145,16 @@ app.get("/route/:vehicleId", async (req, res) => {
 app.get("/optimize-routes", async (req, res) => {
   try {
     const { rows: alerts } = await pool.query(`
-      SELECT ra.store_id, ra.priority_score, s.lat, s.lng
-      FROM reorder_alerts ra
-      JOIN stores s ON ra.store_id = s.store_id
-      WHERE ra.current_stock < ra.reorder_threshold
-    `);
+         SELECT ra.store_id, ra.priority_score, s.lat, s.lng
+         FROM reorder_alerts ra
+         JOIN stores s ON ra.store_id = s.store_id
+         WHERE ra.current_stock < ra.reorder_threshold
+       `);
     const { rows: dc } = await pool.query(`
-      SELECT id, latitude as lat, longitude as lng
-      FROM FulfillmentCenter
-      WHERE id = 1
-    `);
+         SELECT id, latitude as lat, longitude as lng
+         FROM FulfillmentCenter
+         WHERE id = 1
+       `);
 
     const clusters = [];
     const visited = new Set();
@@ -189,30 +200,41 @@ app.get("/optimize-routes", async (req, res) => {
       [current.lng, current.lat],
       ...route.map((r) => [r.lng, r.lat]),
     ];
-    if (!process.env.ORS_API_KEY) {
-      return res.status(500).json({ error: "Mapbox access token is missing" });
-    }
+    const mapboxToken = process.env.MAPBOX_TOKEN;
+    let routeGeometry = { type: "LineString", coordinates };
+    let distanceKm = 0;
 
-    const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates.map((c) => c.join(",")).join(";")}?geometries=geojson&access_token=${process.env.ORS_API_KEY}`;
-    let mapboxResponse;
-    try {
-      mapboxResponse = await axios.get(mapboxUrl);
-    } catch (error) {
-      console.error("Mapbox API error:", error.response?.data || error.message);
-      return res.status(error.response?.status || 500).json({
-        error: `Mapbox API error: ${error.response?.data?.message || error.message}`,
-      });
+    if (mapboxToken) {
+      const mapboxUrl = `https://api.mapbox.com/directions/v5/mapbox/driving/${coordinates.map((c) => c.join(",")).join(";")}?geometries=geojson&access_token=${mapboxToken}`;
+      console.log("Mapbox optimize-routes URL:", mapboxUrl);
+      try {
+        const mapboxResponse = await axios.get(mapboxUrl);
+        console.log(
+          "Mapbox optimize-routes response:",
+          JSON.stringify(mapboxResponse.data, null, 2),
+        );
+        routeGeometry =
+          mapboxResponse.data.routes[0]?.geometry || routeGeometry;
+        distanceKm = (mapboxResponse.data.routes[0]?.distance || 0) / 1000;
+      } catch (error) {
+        console.error(
+          "Mapbox API error:",
+          error.response?.data?.message || error.message,
+        );
+        console.warn("Falling back to linear route for optimize-routes");
+      }
+    } else {
+      console.warn(
+        "Mapbox access token missing, using linear route for optimize-routes",
+      );
     }
-    const routeGeometry = mapboxResponse.data.routes[0]?.geometry || {
-      type: "LineString",
-      coordinates,
-    };
 
     res.json({
       routes: route.map((r, index) => ({
         store_id: r.store_id,
         sequence: index + 1,
         geometry: routeGeometry,
+        distance_km: distanceKm,
       })),
     });
   } catch (error) {
