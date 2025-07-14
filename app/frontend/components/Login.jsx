@@ -1,4 +1,5 @@
 "use client";
+
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
@@ -23,6 +24,9 @@ const Login = () => {
         return;
       }
       localStorage.setItem("token", data.token);
+      localStorage.setItem("role", data.role);
+      localStorage.setItem("store_id", data.store_id);
+      localStorage.setItem("vehicle_id", data.vehicle_id);
       console.log("Stored token:", data.token);
       if (data.role === "store_owner" && data.store_id) {
         router.push(`/store/${data.store_id}`);
@@ -40,40 +44,42 @@ const Login = () => {
   };
 
   return (
-    <div
-      style={{
-        maxWidth: "400px",
-        margin: "50px auto",
-        padding: "20px",
-        border: "1px solid #ccc",
-        borderRadius: "8px",
-      }}
-    >
-      <h1>Login</h1>
-      <form onSubmit={handleLogin}>
-        <div style={{ marginBottom: "15px" }}>
-          <label>Username: </label>
-          <input
-            type="text"
-            value={username}
-            onChange={(e) => setUsername(e.target.value)}
-            style={{ width: "100%", padding: "8px", borderRadius: "4px" }}
-          />
+    <div className="container mx-auto p-6">
+      <div className="card bg-base-100 shadow-xl max-w-md mx-auto">
+        <div className="card-body">
+          <h1 className="card-title">RetailChain OS Login</h1>
+          {error && <div className="alert alert-error">{error}</div>}
+          <form onSubmit={handleLogin}>
+            <div className="form-control mb-4">
+              <label className="label">
+                <span className="label-text">Username</span>
+              </label>
+              <input
+                type="text"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                className="input input-bordered w-full"
+                required
+              />
+            </div>
+            <div className="form-control mb-4">
+              <label className="label">
+                <span className="label-text">Password</span>
+              </label>
+              <input
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="input input-bordered w-full"
+                required
+              />
+            </div>
+            <button type="submit" className="btn btn-primary w-full">
+              Login
+            </button>
+          </form>
         </div>
-        <div style={{ marginBottom: "15px" }}>
-          <label>Password: </label>
-          <input
-            type="password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            style={{ width: "100%", padding: "8px", borderRadius: "4px" }}
-          />
-        </div>
-        <button type="submit" style={{ padding: "10px 20px" }}>
-          Login
-        </button>
-      </form>
-      {error && <p style={{ color: "red", marginTop: "10px" }}>{error}</p>}
+      </div>
     </div>
   );
 };

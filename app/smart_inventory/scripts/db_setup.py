@@ -1,4 +1,3 @@
-
 """
 db_setup.py
 Purpose: Creates PostgreSQL databases and tables for RetailChain OS, supporting walmart_db (SmartInventory, RouteAI, TrackX) and postgres (Fulfillment).
@@ -26,9 +25,6 @@ def create_databases():
         cur.execute("DROP DATABASE IF EXISTS walmart_db")
         cur.execute("CREATE DATABASE walmart_db OWNER walmart_user")
         print("walmart_db created successfully")
-
-        cur.close()
-        conn.close()
     except Exception as e:
         print(f"Error creating databases: {e}")
     finally:
@@ -54,7 +50,8 @@ def create_tables():
                 store_location VARCHAR(100) NOT NULL,
                 store_address VARCHAR(255),
                 lat FLOAT,
-                lng FLOAT
+                lng FLOAT,
+                verified BOOLEAN DEFAULT FALSE
             );
 
             CREATE TABLE IF NOT EXISTS FulfillmentCenter (
@@ -64,7 +61,6 @@ def create_tables():
                 current_workload INTEGER,
                 handling_capacity INTEGER
             );
-
 
             CREATE TABLE IF NOT EXISTS products (
                 sku_id SERIAL PRIMARY KEY,
@@ -162,7 +158,6 @@ def create_tables():
                 FOREIGN KEY (sku_id) REFERENCES products(sku_id),
                 FOREIGN KEY (store_id) REFERENCES stores(store_id)
             );
-
 
             CREATE TABLE IF NOT EXISTS InventoryItem (
                 id SERIAL PRIMARY KEY,

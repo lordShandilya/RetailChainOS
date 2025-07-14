@@ -1,4 +1,16 @@
 @import "tailwindcss";
+@plugin "daisyui" {
+    themes: corporate --default;
+    --primary: #5e81ac;
+    --primary-content: #eceff4;
+    --secondary: #81a1c1;
+    --accent: #88c0d0;
+    --neutral: #2e3440;
+    --base-100: #3b4252;
+    --base-200: #434c5e;
+    --base-300: #4c566a;
+    --base-content: #d8dee9;
+}
 
 :root {
     --background: #ffffff;
@@ -19,7 +31,7 @@
     }
 }
 
-body {
+/* body {
     font-family: Arial, sans-serif;
     margin: 0;
     padding: 0;
@@ -57,4 +69,4 @@ button {
 }
 button:hover {
     background: #0b6abf;
-}
+} */
