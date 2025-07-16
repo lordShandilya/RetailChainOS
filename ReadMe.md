@@ -11,7 +11,7 @@ RetailChain OS is an innovative web application which streamlines retail invento
 RetailChain OS solves the critical problem of inefficient inventory management and delivery optimization in large-scale retail chains. Retail operations often suffer from delayed restocking, suboptimal delivery routes, and lack of automated decision-making, leading to stockouts, overstocking, increased fuel costs, and delayed deliveries, which harm customer satisfaction and profitability.
 
 
-# How are you trying solve this problem?
+# How are you trying to solve this problem?
 
 **RetailChain OS** tackles inefficiencies in retail inventory management and delivery optimization with a technology-driven, automated approach:
 
